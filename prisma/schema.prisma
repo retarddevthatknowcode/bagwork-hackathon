@@ -1,0 +1,984 @@
+// BAGWORK - marketplace schema, targeting Supabase Postgres.
+//
+// Two connection URLs are used on purpose:
+//   DATABASE_URL - pooled (Supavisor, port 6543). Used by the app at runtime so
+//                  concurrent requests do not exhaust Postgres connections.
+//   DIRECT_URL   - session pooler (port 5432). Used by Prisma for schema changes.
+//
+// Naming: models stay PascalCase in the Prisma Client, while `@@map`/`@map` give the
+// database snake_case identifiers. That keeps TypeScript idiomatic AND makes the tables
+// usable from PostgREST/supabase-js and raw SQL as `campaigns`, `user_id`, etc.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+/// A creator ("Bagworker"). Identity comes from Privy, not Supabase Auth: `privyId`
+/// is the DID issued by Privy and is the key every authenticated request resolves to.
+model User {
+  id            String   @id @default(cuid())
+  privyId       String?  @unique @map("privy_id")
+  walletAddress String?  @unique @map("wallet_address")
+  /**
+   * Where payouts are sent.
+   *
+   * Separate from `walletAddress` (the wallet used to sign in): someone who signed up with
+   * email has no wallet, and someone who signed in with a wallet may still want payouts to
+   * land somewhere else. Defaults to the signing wallet when that is all we have.
+   */
+  payoutWallet  String?  @map("payout_wallet")
+  handle        String?
+  avatarColor   String   @default("#bdfe00") @map("avatar_color")
+  trustScore    Int      @default(50) @map("trust_score")
+  totalEarned   Float    @default(0) @map("total_earned")
+  submissions   Int      @default(0)
+  approvals     Int      @default(0)
+
+  /**
+   * The permanent public identity number, rendered as `Bagworker#3578`.
+   *
+   * Random 4-digit and unique. Generated once when the row is created and never
+   * rewritten: it is what a future profile marketplace transfers on sale, so it has
+   * to survive a change of owner (`handle` and `displayName` will not).
+   *
+   * Allocated by `freeProfileNumber()` in `lib/auth/session.ts`, and — because there is no
+   * column default and this must never be null — *also* guaranteed by the database: the
+   * `users_assign_profile_number` trigger from the `profile_number_db_guarantee` migration
+   * fills the column in whenever a writer leaves it out. That covers an older deployment, a
+   * script, or anything else that inserts a row without knowing about this field. Prisma does
+   * not manage triggers, so there is deliberately nothing to declare here for it; the
+   * `NOT NULL` and the unique index below are its two visible halves.
+   */
+  profileNumber Int      @unique @map("profile_number")
+  /**
+   * Lifetime progression points. Rule (see `lib/profile/points.ts`):
+   * `$1 of real approved earnings = 33 points`.
+   *
+   * Two things add points, and nothing else does: `creditPayoutRewards`, which runs when a
+   * payout settles on-chain, and `awardQuestPoints`, which runs the moment a weekly quest is
+   * completed. Both live in `lib/profile/rewards.ts`. Pending or rejected work, hand-made
+   * adjustments, and purchases must never touch this column — that is what makes the number
+   * meaningful as a store of value.
+   */
+  points        Int      @default(0)
+  /**
+   * Derived from `points` (`levelFromPoints`), cached so lists can sort and filter on
+   * a level without recomputing the curve for every row. Status only — nothing is
+   * gated behind it.
+   */
+  level         Int      @default(1)
+
+  // Profile — captured by onboarding, editable from the profile page.
+  displayName           String?   @map("display_name")
+  bio                   String?
+  avatarUrl             String?   @map("avatar_url")
+  /// One of the built-in pixel avatars (`NPC_AVATARS`). Null until the user picks one.
+  avatarId              String?   @map("avatar_id")
+  /**
+   * The pixel character built in onboarding: skin, hair, eyes, accessory, top, background.
+   *
+   * Stored as the choice set (see `lib/profile/character.ts`) rather than baked pixels, so
+   * the renderer can be improved without touching rows. Null for accounts created before
+   * the builder existed; the UI derives a stable character from `profileNumber` instead.
+   */
+  character             Json?
+  /// CREATOR | PUBLISHER | BOTH — what the person came here to do.
+  userType              String?   @map("user_type")
+  /// Linked social handles, e.g. { "x": "@handle", "youtube": "channel" }.
+  socials               Json      @default("{}")
+  /// Campaign categories the user cares about, used to personalise the feed.
+  interests             Json      @default("[]")
+  /// Null until onboarding is finished — the console gates on this.
+  onboardingCompletedAt DateTime? @map("onboarding_completed_at")
+  lastSeenAt            DateTime? @map("last_seen_at")
+
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  submissionsRel Submission[]
+  payouts        Payout[]
+  leaderboard    Leaderboard?
+  /// Weekly quest progress rows (see `lib/quests`). One row per quest per week.
+  questProgress  UserQuest[]
+  /// Bags this user funded as a publisher (see `Campaign.createdBy`).
+  campaigns      Campaign[] @relation("CampaignCreator")
+  /** Coins this user launched through the Launch Wizard. */
+  launches       Launch[]   @relation("LaunchLauncher")
+  /// Communities this user created — at most one per bag they funded.
+  communitiesCreated Community[] @relation("CommunityCreator")
+  /// Community memberships. Written when a bagworker opts into a bag, or on first open.
+  communityMemberships CommunityMember[]
+  /// Announcements this user posted into a community. Admin-only, enforced in the route.
+  communityMessages CommunityMessage[]
+  /// Feature requests this user posted. Posting is gated on level (`lib/features/`).
+  featureRequests FeatureRequest[]
+  /// Upvotes this user cast. One per request — see the unique index on `FeatureVote`.
+  featureVotes    FeatureVote[]
+
+  /// Bug reports and system ops events attributed to this user. Only USER_REPORT rows carry one;
+  /// a SYSTEM row is about a request, not a person. See `lib/ops/`.
+  opsReports      OpsReport[]
+
+  @@index([totalEarned])
+  /// Profile value ordering — the future marketplace sorts and filters on this.
+  @@index([points])
+  @@map("users")
+}
+
+/// One token transfer into the Bagwork fee wallet, and its conversion to USDC.
+///
+/// Every deposit is recorded whether or not it could be converted, because the tokens are real
+/// money that has already left the publisher's control. A row that could not be matched to a bag,
+/// or whose swap failed, is the only record that the funds exist — deleting or skipping it would
+/// quietly lose them.
+model FeeDeposit {
+  id         String @id @default(cuid())
+  /// The on-chain transfer that brought the tokens in. Unique, so a re-poll cannot double-credit.
+  signature  String @unique
+  /// The bag these fees were credited to. Null when no bag is set up for this mint yet.
+  campaignId String? @map("campaign_id")
+
+  mint       String
+  symbol     String   @default("")
+  decimals   Int      @default(9)
+  /// Raw token units, as a string so no precision is lost to JSON or a float column.
+  rawAmount  String   @map("raw_amount")
+  /// Human-readable token amount, for display.
+  tokenAmount Float   @map("token_amount")
+  fromAddress String   @map("from_address")
+  toAddress   String   @map("to_address")
+
+  /// received | matched | swapped | failed | unmatched
+  status      String   @default("received")
+  /// USDC actually received from the swap. Null until it settles.
+  usdcAmount  Float?   @map("usdc_amount")
+  /**
+   * What this deposit was worth in USDC at the moment we declined to swap it.
+   *
+   * A deposit under the swap floor is left in the wallet on purpose, and the UI has to be able to say
+   * how much is waiting rather than just how many tokens. The number comes from the Jupiter quote the
+   * floor was applied to, so it is a real price observation rather than a guess, and it is refreshed
+   * on every pass because the retry re-quotes. Null means no quote was ever obtained (no route yet),
+   * which the panel renders as "—" rather than zero.
+   */
+  estimatedUsdc Float? @map("estimated_usdc")
+  swapSignature String? @map("swap_signature")
+  /// Why a swap did not happen, kept verbatim so a failure is diagnosable later.
+  swapError   String?  @map("swap_error")
+
+  /// When the transfer landed on-chain (from the chain, not from when we noticed).
+  receivedAt  DateTime @map("received_at")
+  swappedAt   DateTime? @map("swapped_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  campaign Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  /** Raw treasury ledger rows that turned into this deposit. */
+  treasuryEvents TreasuryInboundEvent[]
+
+  @@index([campaignId])
+  @@index([mint])
+  @@index([status])
+  @@map("fee_deposits")
+}
+
+/**
+ * Every transfer the Bagwork treasury has seen, as reported by the Alchemy address-activity
+ * webhook or read back from the RPC.
+ *
+ * Deliberately separate from `FeeDeposit`. That table is the *swap queue* for one narrow class of
+ * deposit — trading fees from a mint a bag has opted into — and it exists to be converted. This is
+ * the raw ledger of everything that moved, which is what the webhook can actually be trusted to
+ * produce, and it is written *before* any matching happens. A deposit therefore always leaves a
+ * trace even when no bag wants it, when it is too small to swap, or when the parser does not yet
+ * understand its shape; `raw` keeps the original payload so a parser fix can be checked against
+ * what really arrived rather than against a guess.
+ */
+model TreasuryInboundEvent {
+  id            String @id @default(cuid())
+  /// `<signature>:<transferIndex>` — unique, so a replayed webhook cannot be processed twice.
+  eventKey      String @unique @map("event_key")
+  /// The on-chain transaction that carried the transfer.
+  signature     String
+  /// Which transfer inside that transaction this is (one tx can move several things).
+  transferIndex Int    @default(0) @map("transfer_index")
+
+  /// in | out
+  direction     String @default("in")
+  /// native | spl
+  assetType     String @default("spl") @map("asset_type")
+  /// SPL mint, or the native marker, as the chain reports it.
+  mint          String @default("")
+  symbol        String @default("")
+  decimals      Int    @default(9)
+  /// Raw base units as a string, so nothing is lost to a float column.
+  rawAmount     String @map("raw_amount")
+  /// Human-readable amount.
+  amount        Float
+  fromAddress   String @map("from_address")
+  toAddress     String @map("to_address")
+  /// The address being watched when this was recorded (the treasury).
+  watchAddress  String @map("watch_address")
+
+  /// funding | fee_redirect | buyback | burn | unmatched
+  kind          String  @default("unmatched")
+  /// pending | matched | credited | ignored
+  status        String  @default("pending")
+  /// The bag this was matched to, when it was.
+  campaignId    String? @map("campaign_id")
+  /// The swap-queue row this became, when it was convertible.
+  feeDepositId  String? @map("fee_deposit_id")
+  /// Human-readable outcome, kept verbatim so a mismatch is diagnosable later.
+  note          String? @default("")
+
+  /// webhook | rpc
+  source        String    @default("webhook")
+  /// When the transfer landed on-chain (from the chain, not from when we noticed).
+  blockTime     DateTime? @map("block_time")
+  /// The payload this row was parsed from, verbatim.
+  raw           Json?
+  processedAt   DateTime? @map("processed_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  campaign   Campaign?   @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  feeDeposit FeeDeposit? @relation(fields: [feeDepositId], references: [id], onDelete: SetNull)
+
+  @@index([signature])
+  @@index([mint])
+  @@index([kind])
+  @@index([status])
+  @@index([createdAt])
+  @@map("treasury_inbound_events")
+}
+///
+/// Held in the database rather than object storage because this deployment has no bucket
+/// configured, and a banner is small: capped well under a megabyte, which fits in a row and
+/// in a serverless response. Swapping this for a CDN later only changes the two upload
+/// routes — the campaign stores a URL either way.
+model Upload {
+  id        String   @id @default(cuid())
+  /// Who uploaded it. Null for rows whose uploader has since been deleted.
+  userId    String?  @map("user_id")
+  mimeType  String   @map("mime_type")
+  bytes     Int
+  data      Bytes
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@map("uploads")
+}
+
+/// A token projects can be paid in. One row per token, reused across campaigns.
+model Project {
+  id          String   @id @default(cuid())
+  name        String
+  tokenSymbol String   @map("token_symbol")
+  tokenColor  String   @default("#bdfe00") @map("token_color")
+  tokenMint   String   @map("token_mint")
+  /// Resolved from the mint (Helius DAS) or supplied with a custom CA.
+  tokenName     String?  @map("token_name")
+  tokenDecimals Int      @default(6) @map("token_decimals")
+  tokenLogoUrl  String?  @map("token_logo_url")
+  /// BAGWORK | USDC | SOL | CUSTOM — how the budget is denominated.
+  tokenKind   String   @default("USDC") @map("token_kind")
+  /// The Bagwork treasury that custodies campaign budgets. Publisher funds have no path back.
+  treasury    String
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  campaigns Campaign[]
+
+  @@index([tokenSymbol])
+  @@map("projects")
+}
+
+/// A funded campaign ("Bag") creators can submit content against.
+model Campaign {
+  id             String   @id @default(cuid())
+  /// The publisher who created and funded this bag.
+  ///
+  /// Nullable on purpose: the two seeded test campaigns predate ownership, and a User
+  /// row can be removed without deleting the bags they funded (the FK is ON DELETE SET
+  /// NULL). Every bag created through `POST /api/campaigns` now carries an owner, which
+  /// is what the publisher's "My Bags" view is scoped to.
+  createdBy      String?  @map("created_by")
+  projectId      String   @map("project_id")
+  title          String
+  description    String
+  contentType    String   @map("content_type") // SHILLING | CLIPPING | UGC | ORIGINAL
+  rateType       String   @map("rate_type") // DYNAMIC | FIXED
+  ratePer1k      Float    @map("rate_per_1k")
+  maxPayout      Float    @map("max_payout")
+  budget         Float
+  fundedAmount   Float    @default(0) @map("funded_amount")
+  /** Banner artwork for the card — a Supabase Storage public URL. */
+  bannerUrl      String?  @map("banner_url")
+  /** solana (only chain live today; the UI is ready for more). */
+  chain          String   @default("solana")
+  /** FIXED | RPM | HYBRID — what the publisher picked. `rateType` is derived from this. */
+  paymentModel   String   @default("FIXED") @map("payment_model")
+  /**
+   * The flat component of a HYBRID payout: paid for the post itself, before the per-1K
+   * bonus. Null for FIXED (whose flat fee is `maxPayout`) and RPM (which has no flat part).
+   */
+  fixedFee       Float?   @map("fixed_fee")
+  /** Hard cap on accepted submissions; null = the slot count is the only limit. */
+  maxSubmissions Int?     @map("max_submissions")
+  /** How many posts one creator may submit; null = unlimited. */
+  maxPerCreator  Int?     @map("max_per_creator")
+  /**
+   * Bagwork's treasury, which custodies the budget.
+   *
+   * Deliberately pinned when the campaign is created rather than looked up live: the funds
+   * for a given bag are already in that account, so the address must not drift. There is no
+   * field or route that returns funds to the publisher.
+   */
+  treasury       String   @map("treasury")
+  /** The on-chain transfer that funded this bag. A bag is only LIVE once one exists. */
+  fundingSignature String? @map("funding_signature")
+  fundedAt       DateTime? @map("funded_at")
+  /**
+   * The wallet the funding transfer was built from, set when the transaction is built.
+   *
+   * Verification requires that this wallet signed the transfer. It is recorded rather than assumed
+   * to be the profile's wallet because a publisher may pay from any wallet their Privy session can
+   * sign with (an embedded one, or Phantom), and the two are not always the same address. Only the
+   * bag's own creator can build or fund it, so this can never point at someone else's wallet.
+   */
+  fundingWallet  String?  @map("funding_wallet")
+  holderGate     Boolean  @default(false) @map("holder_gate")
+  holderMin      Float    @default(0) @map("holder_min")
+  /**
+   * Which of the two Bagwork treasuries custodies this bag's budget: FIXED (publisher budgets) or
+   * FEE (redirected trading fees).
+   *
+   * Pinned at creation alongside `treasury`, for the same reason: the funds for a given bag are
+   * already in that account, so the pair must never drift. Rows created before the column existed
+   * default to FIXED and are stamped by the migration (`fee_redirect_enabled = true` → FEE), which
+   * is also the derivation `treasuryKindFor` applies to any row that predates it.
+   */
+  treasuryKind   String   @default("FIXED") @map("treasury_kind")
+  /**
+   * Fee Redirect: trading fees routed here become this bag's budget.
+   *
+   * `feeMint` is separate from the project's token on purpose — a team can route the fees of a
+   * different token (a launchpad creator token, say) into a bag priced in USDC, and the mint is
+   * what the deposit is matched on.
+   */
+  feeRedirectEnabled Boolean @default(false) @map("fee_redirect_enabled")
+  /** The share of trading fees the publisher is redirecting, for display and records. */
+  feeRedirectPct     Float?  @map("fee_redirect_pct")
+  /** The mint whose trading fees fund this bag. Null unless Fee Redirect is on. */
+  feeMint            String? @map("fee_mint")
+  /**
+   * USDC credited to this bag from converted trading fees.
+   *
+   * Kept apart from `fundedAmount` so the publisher's own deposit and the trading loop can be
+   * told apart — "this bag is 40% self-funded by its own volume" is the whole point of the
+   * feature, and it is invisible if the two are merged.
+   */
+  feeRaisedUsdc      Float   @default(0) @map("fee_raised_usdc")
+  /**
+   * USDC this bag has settled **or reserved** for payouts.
+   *
+   * A denormalised running total, kept for exactly one reason: it makes the budget guard atomic.
+   * The business limit is always *this bag's own budget* — never the FEE wallet's balance, which
+   * every flywheel bag shares — and two concurrent payouts for the same bag must not both pass the
+   * check. A single `UPDATE … WHERE budget - paid_out >= amount` is the only form of that test
+   * Postgres can make atomic, because Prisma cannot compare two columns in a `where` clause.
+   *
+   * `spent` on the public shape is still derived from `paid` submissions — that remains the settled
+   * truth the UI shows. This column only ever runs *ahead* of it, by the amount of an in-flight
+   * payout, and `releaseCampaignBudget` clamps it so it can never fall below it.
+   */
+  paidOut        Float   @default(0) @map("paid_out")
+  /**
+   * The mint creators are actually paid in, when that is not the project's own token.
+   *
+   * A flywheel bag's budget is USDC whatever the coin costs: the fee loop swaps the token's fees
+   * into USDC *before* crediting them. But a launched bag's `Project` deliberately keeps the coin's
+   * identity — its symbol and name are what the marketplace card renders for a launched coin — so
+   * `project.tokenMint` there is the *coin*, not the thing the treasury actually holds. Payouts have
+   * to follow the money, not the badge.
+   *
+   * Null means "pay in `project.tokenMint`", which is every fixed-budget bag: its publisher funded
+   * the token the bag is priced in, and that token is what is sitting in the treasury.
+   */
+  payoutMint     String? @map("payout_mint")
+  platforms      Json     @default("[]") // platform keys, e.g. ["x","tiktok"]
+  geo            Json     @default("[]") // allowed regions, e.g. ["GLOBAL"]
+  status         String   @default("LIVE") // LIVE | FILLING | PAUSED | ENDED | DRAFT
+  /**
+   * Internal provenance: an operator created this bag from the admin portal rather than a
+   * publisher funding it (so `createdBy` is null and the budget was set directly instead of
+   * transferred).
+   *
+   * Deliberately never mapped into a public payload: `mapCampaign` builds the marketplace
+   * shape field by field, so this cannot leak. Creators must not be able to tell an
+   * operator-created bag from a funded one.
+   */
+  createdByAdmin Boolean  @default(false) @map("created_by_admin")
+  /**
+   * FIXED | FLYWHEEL — which of the two products this bag is.
+   *
+   * Derived once at creation and then persisted, rather than inferred from `feeRedirectEnabled` on
+   * every read. The flag records *how the money arrives*; this records *which product the publisher
+   * chose*, and the two came apart the moment a second way of creating a Fee Redirect bag existed.
+   * The backfill in the migration mirrors the old derivation exactly (`fee_redirect_enabled = true`
+   * → FLYWHEEL), so pre-existing rows read the same as they always did.
+   */
+  kind           String   @default("FIXED")
+  /**
+   * The launched token's own artwork and ticker, when this bag came from a launch.
+   *
+   * Kept on the campaign rather than reached through `Project` because the marketplace card, the
+   * post-launch page and the bag header all render it, and each of them already loads the campaign.
+   * Null for every fixed-budget bag and for flywheels pointed at someone else's token.
+   */
+  tokenImageUrl  String?  @map("token_image_url")
+  tokenSymbol    String?  @map("token_symbol")
+  slotsRemaining Int      @map("slots_remaining")
+  endsAt         DateTime @map("ends_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  creator     User?        @relation("CampaignCreator", fields: [createdBy], references: [id], onDelete: SetNull)
+  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  submissions Submission[]
+  /** Fee Redirect deposits credited to this bag. */
+  feeDeposits FeeDeposit[]
+  /** Raw treasury transfers the webhook matched to this bag. */
+  treasuryEvents TreasuryInboundEvent[]
+  /** Admin edit history — see `CampaignAdminChange`. */
+  adminChanges CampaignAdminChange[]
+  /**
+   * The bag's community, if the publisher opened one.
+   *
+   * Optional, and `campaignId` is `@unique` on the far side: one community per bag, and a bag
+   * with no community is simply a bag whose publisher has not opened a space for it yet.
+   */
+  community    Community?
+  /** The launch that created this bag, for a Flywheel bag launched from Bagwork. */
+  launch       Launch?      @relation("LaunchBag")
+
+  @@index([status])
+  @@index([endsAt])
+  @@index([projectId])
+  @@index([createdBy])
+  @@index([kind])
+  @@map("campaigns")
+}
+
+/**
+ * A pump.fun coin launched through Bagwork's Launch Wizard.
+ *
+ * One row per launch attempt, created *before* the user signs and completed after verification. It is
+ * deliberately separate from `Campaign`: the campaign is the content product (brief, rates, slots,
+ * payouts) while this is the on-chain fact that produced it (mint, transaction, the fee split that
+ * was locked). Keeping them apart means a launch that fails verification leaves a diagnosable row
+ * instead of either a half-made campaign or nothing at all.
+ *
+ * `mint` is unique for the same reason it is on `FeeDeposit` — the mint *is* the identity of a
+ * launch, and it is what fee deposits are matched on later.
+ */
+model Launch {
+  id             String   @id @default(cuid())
+  /// The SPL mint of the launched coin. Generated client-side and signed into the create, so the
+  /// server never holds a key to a user's coin.
+  mint           String   @unique
+  name           String
+  symbol         String
+  /// The token's artwork, as a Supabase Storage public URL (also the campaign's art).
+  imageUrl       String?  @map("image_url")
+  description    String
+  /// The metadata JSON the pump `create_v2` instruction points at.
+  metadataUri    String?  @map("metadata_uri")
+
+  launcherUserId String?  @map("launcher_user_id")
+  /// The wallet that signed the launch. Recorded so a launch can be attributed to the wallet that
+  /// actually paid for it, which is not always the one on the profile.
+  launcherWallet String   @map("launcher_wallet")
+  /// The atomic launch transaction, once it exists.
+  signature      String?  @unique
+
+  /// pending | verified | failed
+  status         String   @default("pending")
+  /// Why verification failed, verbatim, so a failed launch is diagnosable rather than mysterious.
+  error          String?
+
+  /// Lamports the launcher bought with in the same transaction. Zero when they skipped the dev buy.
+  devBuyLamports BigInt   @default(0) @map("dev_buy_lamports")
+  /// That dev buy as basis points of the token's total supply — the number the 10% cap is enforced
+  /// on. Stored as bps so the cap is checkable against the stored value without re-deriving supply.
+  devBuyBps      Int      @default(0) @map("dev_buy_bps")
+
+  /// The FEE treasury the coin's creator fees were locked to, pinned so the record of what the
+  /// shares were set to cannot drift from the treasury that actually receives them.
+  treasury       String
+  /// The share assigned to the treasury, in basis points. Read back off the chain, not assumed —
+  /// this is the value the "100% locked" claim is made from.
+  feeShareBps    Int      @default(0) @map("fee_share_bps")
+  /// True once the sharing config's admin is revoked, which is what makes the split permanent.
+  adminRevoked   Boolean  @default(false) @map("admin_revoked")
+  verifiedAt     DateTime? @map("verified_at")
+
+  /// The Flywheel bag this launch produced, once the bag factory has run.
+  bagId          String?  @unique @map("bag_id")
+
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  launcher User?     @relation("LaunchLauncher", fields: [launcherUserId], references: [id], onDelete: SetNull)
+  campaign Campaign? @relation("LaunchBag", fields: [bagId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([launcherUserId])
+  @@map("launches")
+}
+
+/**
+ * One entry per admin edit of a campaign.
+ *
+ * The portal has no per-operator accounts (a single shared password opens it), so there is no
+ * "who" to record — only what changed and when. Enough to answer "why is this bag's budget
+ * different from what the publisher funded?", which is the question an audit trail is for.
+ */
+model CampaignAdminChange {
+  id         String   @id @default(cuid())
+  campaignId String   @map("campaign_id")
+  /** `{ field: { from, to } }` for every field the edit touched. */
+  changes    Json     @default("{}")
+  /** The action that produced the change: CREATE | UPDATE | PAUSE | RESUME | END. */
+  action     String   @default("UPDATE")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId])
+  @@map("campaign_admin_changes")
+}
+
+/// A creator submission, from submission through review to payout.
+model Submission {
+  id                String   @id @default(cuid())
+  campaignId        String   @map("campaign_id")
+  userId            String?  @map("user_id")
+  /**
+   * The post link. Null while a creator has only *claimed a slot* (see `claimedAt`) — the
+   * claim happens on the bag, and the link is added from My Submissions afterwards.
+   */
+  postUrl           String?  @map("post_url")
+  /** When the creator opted into the bag. Null for rows created before claims existed. */
+  claimedAt         DateTime? @map("claimed_at")
+  /**
+   * When the post link arrived and passed validation.
+   *
+   * Set by `POST /api/submissions` on both paths (filling a claim, or a fresh submission) and
+   * never rewritten afterwards. `createdAt` cannot serve this purpose: a claim created on
+   * Monday and filled on Friday has a `createdAt` of Monday, which would put the link in the
+   * wrong week. The weekly quest "Content Creator" counts links, so it needs the week the link
+   * actually landed.
+   */
+  submittedAt       DateTime? @map("submitted_at")
+  /**
+   * When review approved this submission.
+   *
+   * Null unless the row is `approved` or `paid`, and cleared if a later verdict rejects it.
+   * Views are attributed to the week in which a submission was approved (see the "View Hunter"
+   * quest) — `updatedAt` moves on any write, so it cannot carry that meaning.
+   */
+  approvedAt        DateTime? @map("approved_at")
+  platform          String
+  /** claimed | pending | reviewing | approved | rejected | paid */
+  status            String   @default("pending")
+  /**
+   * The verified social account this link was proven to come from.
+   *
+   * Recorded rather than derived, for audit: a submission is only accepted when the post's author
+   * matches an account the creator had connected, and if a profile's handles change later there
+   * would otherwise be no way to show what was checked at the time.
+   */
+  verifiedHandle    String?  @map("verified_handle")
+  /** The platform `verifiedHandle` was verified on. */
+  verifiedPlatform  String?  @map("verified_platform")
+  views             Int      @default(0)
+  likes             Int      @default(0)
+  reposts           Int      @default(0)
+  qualityScore      Int      @default(0) @map("quality_score")
+  authenticityScore Int      @default(0) @map("authenticity_score")
+  payoutAmount      Float?   @map("payout_amount")
+  txSignature       String?  @map("tx_signature")
+  reviewNote        String?  @map("review_note")
+  /// Platform fee withheld from this submission's payout (5% of gross).
+  feeAmount         Float?   @map("fee_amount")
+  /// Raw AI review payload: relevance, spam risk, estimated views, reasoning.
+  aiAnalysis        Json?    @map("ai_analysis")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  user     User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  payout   Payout?
+
+  @@index([campaignId])
+  @@index([userId])
+  @@index([status])
+  @@map("submissions")
+}
+
+/// A confirmed on-chain transfer. One payout per submission.
+model Payout {
+  id           String   @id @default(cuid())
+  submissionId String   @unique @map("submission_id")
+  userId       String?  @map("user_id")
+  amount       Float
+  token        String
+  txSignature  String   @map("tx_signature")
+  status       String   @default("confirmed")
+  /**
+   * When the transfer was confirmed on-chain by the RPC check.
+   *
+   * A payout row is only written once the transaction has been seen to succeed and to pay the
+   * right address the right amount, so this records *when* that was verified rather than being
+   * the thing that makes it true. Nullable because rows written before the confirmation step
+   * existed have no verified timestamp.
+   */
+  confirmedAt  DateTime? @map("confirmed_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  user       User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([userId])
+  @@map("payouts")
+}
+
+/// Denormalised ranking table, recomputed from submissions and payouts.
+model Leaderboard {
+  id           String   @id @default(cuid())
+  userId       String   @unique @map("user_id")
+  handle       String
+  wallet       String
+  trustScore   Int      @map("trust_score")
+  totalEarned  Float    @map("total_earned")
+  submissions  Int
+  approvalRate Int      @map("approval_rate")
+  badge        String?
+  rank         Int
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([rank])
+  @@map("leaderboards")
+}
+
+/// A quest: a repeatable, verifiable goal that pays Points when it is completed.
+///
+/// Rows, not code constants, on purpose. The three starter quests are created by the
+/// `weekly_quests` migration and re-created by `ensureQuestCatalogue` if they are ever missing,
+/// but everything else about them — title, target, reward, whether they are active — is data.
+/// That is what "stored in the database so they can be managed later" means: a future operator
+/// screen changes rows here instead of shipping a migration.
+///
+/// Nothing in `Quest` is trusted by the award path beyond `reward` and `target`; the *metric*
+/// decides which authoritative table progress is read from, and unknown metrics report zero
+/// rather than guessing.
+model Quest {
+  /// Readable, deterministic id (`qst_opt_in_starter`) so the seed SQL can be idempotent
+  /// without needing `cuid()` at insert time.
+  id          String   @id
+  /// Stable key. `lib/quests/weekly.ts` resolves the catalogue by this, never by title.
+  slug        String   @unique
+  title       String
+  description String
+  /// How progress is measured: `opt_in` | `content_links` | `verified_views`.
+  metric      String
+  /// How many units of `metric` complete the quest.
+  target      Int
+  /// Points awarded once, on completion.
+  reward      Int      @default(200)
+  /// `WEEKLY` is the only cadence shipped; daily quests are deliberately not part of this.
+  cadence     String   @default("WEEKLY")
+  /// Hidden from the board without deleting the history behind it.
+  active      Boolean  @default(true)
+  sortOrder   Int      @default(0) @map("sort_order")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  progress UserQuest[]
+
+  @@index([active, sortOrder])
+  @@map("quests")
+}
+
+/// One user's progress on one quest in one week.
+///
+/// The row is a *cache of a derivation*, never a source of truth: progress is recomputed from
+/// submissions and payouts every time it is read (see `lib/quests/engine.ts`), so it cannot
+/// drift away from the work that produced it. What the row uniquely records is the two facts
+/// that cannot be derived — that the completion was claimed, and that the points were paid for
+/// it (`pointsAwarded`) — which is what makes the 200-point award exactly-once.
+///
+/// `periodKey` is an ISO week in UTC (`2026-W36`), so every row belongs to exactly one reset
+/// window and history survives the reset instead of being deleted.
+model UserQuest {
+  id        String @id @default(cuid())
+  userId    String @map("user_id")
+  questId   String @map("quest_id")
+  /// The week this row counts in. ISO week, UTC — e.g. `2026-W36`.
+  periodKey String @map("period_key")
+
+  /// Verified units counted this week, capped at the quest's target.
+  progress Int @default(0)
+  /// `in_progress` | `completed`.
+  status   String @default("in_progress")
+  completedAt DateTime? @map("completed_at")
+  /// Points actually credited for this completion. `0` until the award is claimed, and the
+  /// guard every award path checks before crediting, so a retry can never double-pay.
+  pointsAwarded Int @default(0) @map("points_awarded")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  quest Quest @relation(fields: [questId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, questId, periodKey])
+  @@index([userId, periodKey])
+  @@index([periodKey])
+  @@map("user_quests")
+}
+
+/// ---------------------------------------------------------------------------
+/// Communities
+///
+/// One announcement space per bag. The publisher who funded the bag is its admin and the only
+/// person who can post; everyone who opted into the bag can read. Access is never decided by
+/// these tables alone — a bagworker is a member because they have a submission on the campaign,
+/// and `CommunityMember` records that fact so roles and member counts have somewhere to live.
+/// ---------------------------------------------------------------------------
+
+/// The community space for one bag.
+model Community {
+  id              String   @id @default(cuid())
+  /// One community per campaign. This is also why a bag id can address a community directly.
+  campaignId      String   @unique @map("campaign_id")
+  /// The publisher who opened it. Null once that account is deleted — the community and its
+  /// history outlive the owner, and admin access still derives from `Campaign.createdBy`.
+  createdByUserId String?  @map("created_by_user_id")
+  title           String
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  campaign Campaign           @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  creator  User?              @relation("CommunityCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  members  CommunityMember[]
+  messages CommunityMessage[]
+
+  @@map("communities")
+}
+
+/// Who can open a community, and in what role.
+///
+/// Rows are written when the publisher creates the space (ADMIN) and when a bagworker opts into
+/// the bag (MEMBER). They are a record rather than the permission itself: the access check also
+/// accepts anyone holding a submission on the campaign, so a missing row can never lock a real
+/// member out — it only means they have not been counted yet.
+model CommunityMember {
+  id          String   @id @default(cuid())
+  communityId String   @map("community_id")
+  userId      String   @map("user_id")
+  /// ADMIN | MEMBER. Admin is the bag's publisher; members read and never post.
+  role        String   @default("MEMBER")
+  joinedAt    DateTime @default(now()) @map("joined_at")
+
+  community Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([communityId, userId])
+  @@index([userId])
+  @@map("community_members")
+}
+
+/// One announcement: text, and optionally an image and/or a link.
+model CommunityMessage {
+  id          String   @id @default(cuid())
+  communityId String   @map("community_id")
+  /// The admin who posted it. Null once that account is deleted; the message itself stays.
+  senderId    String?  @map("sender_id")
+  body        String
+  /// Same-origin path returned by the upload route, or null.
+  imageUrl    String?  @map("image_url")
+  /// The first URL found in `body`, kept separate so the feed can render a link card without
+  /// re-parsing text on every render.
+  linkUrl     String?  @map("link_url")
+  isPinned    Boolean  @default(false) @map("is_pinned")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  community Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  sender    User?     @relation(fields: [senderId], references: [id], onDelete: SetNull)
+
+  /// The feed reads newest-first inside a community, and the pinned block reads the same way.
+  @@index([communityId, createdAt])
+  @@index([communityId, isPinned])
+  @@map("community_messages")
+}
+
+/// ---------------------------------------------------------------------------
+/// Feature requests
+///
+/// A public board: anyone signed in can read it and upvote, and posting is the one thing
+/// behind a level gate (Level 4 — see `lib/features/`). It is deliberately *not* scoped to a
+/// bag or a community: this is where people ask for the product itself to change, so the
+/// audience is every Bagworker rather than the members of one space.
+///
+/// The board is platform-level data with no owner, so a deleted account takes nothing with
+/// it: the request stays (other people voted on it) and the vote is what disappears, because
+/// a vote is a statement by one account and cannot outlive it.
+/// ---------------------------------------------------------------------------
+
+/// One idea, with the running tally that orders the board.
+model FeatureRequest {
+  id        String   @id @default(cuid())
+  /// The author. Null once that account is deleted — the request, its text and its votes
+  /// outlive the person who filed it.
+  authorId  String?  @map("author_id")
+  title     String
+  /// The detail body. Plain text, length-capped in the route; never rendered as HTML.
+  details   String
+  /**
+   * Denormalised count of this request's `feature_votes` rows.
+   *
+   * Kept on the row because it is the *sort key for the whole board* — ordering by a
+   * subquery count would mean aggregating every vote on every read. It is written inside the
+   * same transaction as the vote (see `POST /api/features/[id]/vote`), and the unique index on
+   * `feature_votes` is what makes the count impossible to inflate: one account, one vote.
+   */
+  upvotes   Int      @default(0)
+  /// OPEN | PLANNED | DONE — where the idea has got to. Set by us, never by the client.
+  status    String   @default("OPEN")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  author User?         @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  votes  FeatureVote[]
+
+  /// The board's default read: most upvoted first.
+  @@index([upvotes])
+  @@index([createdAt])
+  @@index([status])
+  @@map("feature_requests")
+}
+
+/// One upvote: this account, on this request.
+///
+/// The unique index on `(request_id, user_id)` is the entire anti-spam rule — a second vote
+/// from the same account is refused by the database rather than by a check the route could
+/// forget to make.
+model FeatureVote {
+  id        String   @id @default(cuid())
+  requestId String   @map("request_id")
+  userId    String   @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  /// A deleted request takes its votes with it: they are only meaningful as its tally.
+  request FeatureRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  user    User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([requestId, userId])
+  /// "Which of these have I already voted on" is asked once per board read, for one user.
+  @@index([userId])
+  @@map("feature_votes")
+}
+
+/// ---------------------------------------------------------------------------
+/// Platform settings
+///
+/// Operator-flipped switches that are *state*, not configuration: the batch review engine's
+/// on/off toggle is pressed while looking at the review board, and it has to still be on when
+/// the operator comes back. An env var would mean a redeploy to change it, and the next deploy
+/// would silently revert it — so it lives in the database, one row per key.
+///
+/// `lockedAt` / `lockedBy` are here rather than inside `value` because the batch run's lock has
+/// to be claimed with a single conditional UPDATE (see `lib/settings/platform.ts`). A JSON blob
+/// cannot carry a comparison in a WHERE clause, so two concurrent invocations could both read
+/// "unlocked" and both start a run — which is exactly the double-click the lock exists to stop.
+/// ---------------------------------------------------------------------------
+
+/// One key → one small JSON value, plus the single-flight lock for work keyed to that row.
+model PlatformSetting {
+  key       String    @id
+  value     Json      @default("{}")
+  /// Set while an operation keyed to this setting is running; null when idle. Stale locks expire.
+  lockedAt  DateTime? @map("locked_at")
+  /// Who holds the lock, so a run only ever releases its own claim.
+  lockedBy  String?   @map("locked_by")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  @@map("platform_settings")
+}
+
+/// ---------------------------------------------------------------------------
+/// Bug reports & ops events
+/// ---------------------------------------------------------------------------
+
+/// One thing that went wrong: a bug a person reported, or a failure the platform noticed itself.
+///
+/// Deliberately **one table with a `source` column** rather than two. The operator's question —
+/// "what is broken right now?" — spans both, and the answer is one list ordered by time. Two
+/// tables would mean a union on every read and two status lifecycles to keep in step.
+///
+/// Nothing here is ever shown to a user: there is no "my reports" view and no feed. The dashboard
+/// only *writes* to this table (via `POST /api/reports`) and never reads it. Only `/adminportal`
+/// reads it, behind the admin cookie.
+///
+/// `meta` is a small JSON object of context (status code, endpoint, bag id, …) and must never
+/// carry a secret — `logOpsEvent` strips key-like fields before it is written.
+model OpsReport {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now()) @map("created_at")
+
+  /// USER_REPORT | SYSTEM — forced to USER_REPORT on the public endpoint, never taken from a user.
+  source    String   @default("SYSTEM")
+  /// info | warning | error | critical
+  severity  String   @default("warning")
+  /// ui | api | wallet | payout | review | launch | rate_limit | other
+  category  String   @default("other")
+
+  /// Short one-line summary, for the list.
+  title     String
+  /// The full detail. Plain text, length-capped in the route/helper; never rendered as HTML.
+  message   String
+  /// The console route the report came from, when known (auto-filled for user reports).
+  path      String?
+  /// Who reported it, when signed in. Null for anonymous reports and for SYSTEM rows.
+  userId    String?  @map("user_id")
+  /// Truncated UA string — enough to tell a browser from a bot, no more.
+  userAgent String?  @map("user_agent")
+  /// Context only: status code, endpoint, bag id. **Never** a key, token or password.
+  meta      Json     @default("{}")
+
+  /// open | acknowledged | resolved — set by an operator, never by the reporter.
+  status     String    @default("open")
+  /// Operator's note, written when they acknowledge or resolve.
+  adminNote  String?   @map("admin_note")
+  resolvedAt DateTime? @map("resolved_at")
+
+  /// A deleted account leaves its reports behind — the history is the platform's, not the person's.
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  /// The default read: newest first.
+  @@index([createdAt])
+  /// The board's default filter: open, newest first.
+  @@index([status, createdAt])
+  @@index([source])
+  @@index([category])
+  @@index([userId])
+  @@map("ops_reports")
+}
+

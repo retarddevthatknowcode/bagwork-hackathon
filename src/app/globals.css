@@ -1,0 +1,1225 @@
+/*
+ * Cascade layers, with one slot reserved **before** `utilities`.
+ *
+ * `fd-docs` belongs to the /docs stylesheet, which is a second Tailwind entry — it has to be, since
+ * that is the only place the Fumadocs theme is imported. Two entries in the same layer means two
+ * copies of every utility class, and the copy in the later stylesheet wins; this file is always read
+ * first, so the duplicate `.hidden` that Fumadocs' components dragged in was landing *after* the
+ * `@media (width >= 80rem)` block below that defines `.xl\:flex`. On /docs `hidden xl:flex`
+ * resolved to `hidden`, and the site header rendered its logo with no menu.
+ *
+ * Reserving `fd-docs` — between `components` and `utilities` — gives the /docs entry somewhere to
+ * emit its utilities that sorts below this stylesheet's own. They behave identically for the docs
+ * and can no longer outrank the app. The layer has to be declared here, before Tailwind is imported,
+ * because that is what fixes its position in the order.
+ */
+@layer theme, base, components, fd-docs, utilities;
+
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ===== BAGWORK NEON TERMINAL DESIGN TOKENS ===== */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-space-mono);
+  --font-mono: var(--font-space-mono);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-neon: var(--neon);
+  --color-neon-dim: var(--neon-dim);
+  --color-neon-dark: var(--neon-dark);
+  --color-gold: var(--gold);
+  --color-brand: var(--brand);
+  /*
+   * The readable foreground for anything painted solid `--brand`.
+   *
+   * This token was missing entirely, so every `text-brand-foreground` in the console generated no
+   * rule at all and the label inherited the surrounding colour — which on the dark console is
+   * near-white. White on #ffe70e is roughly 1.4:1, so the active chip in the Explore switch (and
+   * the wizard steppers, and anything else that fills with brand) read as a smear of yellow.
+   * It matches `--primary-foreground`, because a solid brand fill and a solid primary fill are the
+   * same surface and should have the same answer.
+   */
+  --color-brand-foreground: var(--brand-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  /* Dark-only theme (no light mode) */
+  --radius: 0.75rem;
+  /* Background surfaces are the same warm near-black ramp as the console
+     (`--background` matches `.console` exactly) so the whole product sits on one
+     base. Chrome and brand values stay on the terminal-neutral side. */
+  --background: #0b0a07;
+  --foreground: #e0dfe3;
+  --card: #13110c;
+  --card-foreground: #e0dfe3;
+  --popover: #0f0d08;
+  --popover-foreground: #e0dfe3;
+  --primary: #bdfe00;
+  --primary-foreground: #0a0a0a;
+  --secondary: #1a1710;
+  --secondary-foreground: #e0dfe3;
+  --muted: #14110a;
+  --muted-foreground: rgba(255, 255, 255, 0.5);
+  --accent: #bdfe00;
+  --accent-foreground: #0a0a0a;
+  --destructive: #ff4444;
+  --border: rgba(255, 255, 255, 0.08);
+  --input: rgba(255, 255, 255, 0.1);
+  --ring: #bdfe00;
+  --chart-1: #bdfe00;
+  --chart-2: #7ab200;
+  --chart-3: #eab308;
+  --chart-4: #ff6b35;
+  --chart-5: #6a9e00;
+  --sidebar: #0d0b08;
+  --sidebar-foreground: #e0dfe3;
+  --sidebar-primary: #bdfe00;
+  --sidebar-primary-foreground: #0a0a0a;
+  --sidebar-accent: #17140e;
+  --sidebar-accent-foreground: #e0dfe3;
+  --sidebar-border: rgba(255, 255, 255, 0.08);
+  --sidebar-ring: #bdfe00;
+
+  /* BAGWORK-specific */
+  --neon: #bdfe00;
+  --neon-dim: rgba(189, 254, 0, 0.15);
+  --neon-dark: #5a8a00;
+  --gold: #eab308;
+}
+
+/*
+ * The default border colour.
+ *
+ * This has to sit in `@layer base`. Tailwind v4 emits its utilities into `@layer utilities`, and
+ * in the cascade an **unlayered** rule beats every layered one regardless of specificity — so
+ * while this was unlayered, this single `*` rule silently overrode every `border-<colour>` utility
+ * in the app. Surveyed on the live page: elements written as `border-[#bdfe00]/30` (or /20, /40)
+ * all computed to `rgba(255,255,255,0.08)` — this rule — while their `bg-[#bdfe00]/10` siblings
+ * rendered lime, because nothing unlayered sets `background-color`. Inside `@layer base` the
+ * intent holds: this is the default, and a utility that names a colour wins.
+ */
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+}
+
+html {
+  color-scheme: dark;
+  scroll-behavior: smooth;
+  /*
+   * The horizontal guard lives here, on the root, and deliberately **not** on `body`.
+   *
+   * `body { overflow-x: hidden }` looks equivalent and is not. When one axis of an element is not
+   * `visible` and the other is, the `visible` axis computes to `auto` — so that one line turned the
+   * body into a **scroll container** (`overflow: hidden auto`, visible in devtools) sitting inside
+   * the viewport's own scroll container. Two nested scroll boxes for one page: `position: sticky`
+   * children then resolve against the body's scrollport instead of the viewport, the document's
+   * real scroll height is decided by whichever box won, and anything that measures scrolling —
+   * scroll-linked effects, the marketing header's `scrollY` read, Fumadocs' fixed layers — gets an
+   * answer from the wrong box.
+   *
+   * `overflow-x: clip` on the root does the job the original line was there for, without any of
+   * that: it clips overflow horizontally, and `clip` is not a scroll container, so the body stays
+   * `visible` and the viewport remains the single scrolling element for every route.
+   */
+  overflow-x: clip;
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-space-mono), ui-monospace, "SF Mono", Menlo, monospace;
+  font-feature-settings: "ss01", "cv01";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ===== SCROLLBAR ===== */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: #0b0a07;
+}
+::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 9999px;
+  border: 2px solid #0b0a07;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #bdfe00;
+}
+.custom-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #333 #0b0a07;
+}
+.custom-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.custom-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scroll::-webkit-scrollbar-thumb {
+  background: #2a2a2a;
+  border-radius: 9999px;
+}
+.custom-scroll::-webkit-scrollbar-thumb:hover {
+  background: #bdfe00;
+}
+
+/* ===== SELECTION ===== */
+::selection {
+  background: #bdfe00;
+  color: #0a0a0a;
+}
+
+/* ===== RADIAL GREEN GLOW BACKGROUND ===== */
+.bg-grid {
+  background-image:
+    linear-gradient(rgba(189, 254, 0, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(189, 254, 0, 0.04) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+.bg-radial-neon {
+  background:
+    radial-gradient(circle at 50% 0%, rgba(189, 254, 0, 0.12) 0%, transparent 45%),
+    radial-gradient(circle at 85% 30%, rgba(189, 254, 0, 0.06) 0%, transparent 35%);
+}
+
+/* ===== NEON TEXT GLOW ===== */
+.text-neon-glow {
+  text-shadow: 0 0 12px rgba(189, 254, 0, 0.55), 0 0 28px rgba(189, 254, 0, 0.25);
+}
+.neon-box-glow {
+  box-shadow: 0 0 0 1px rgba(189, 254, 0, 0.5), 0 0 24px rgba(189, 254, 0, 0.25);
+}
+.neon-btn-glow {
+  box-shadow: 0 0 24px rgba(189, 254, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+/* ===== 3D BUTTON =====
+   Thick dark "depth" edge below + dark surrounding border + drop shadow.
+   On hover the button lifts; on active it presses down (edge shrinks). */
+.btn-3d {
+  position: relative;
+  border: 2px solid #0a0a0a;
+  box-shadow:
+    0 5px 0 0 var(--btn-edge, #0a0a0a),
+    0 9px 18px -4px rgba(0, 0, 0, 0.75);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease, background-color 0.2s ease;
+}
+.btn-3d:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 7px 0 0 var(--btn-edge, #0a0a0a),
+    0 13px 22px -4px rgba(0, 0, 0, 0.8);
+}
+.btn-3d:active {
+  transform: translateY(3px);
+  box-shadow:
+    0 2px 0 0 var(--btn-edge, #0a0a0a),
+    0 3px 8px -2px rgba(0, 0, 0, 0.6);
+}
+
+/* ===== BUTTON SURFACES =====
+   `.btn-3d` above gives every button its geometry — the 5px lip, the -2px lift and the +3px
+   press. These five classes are what paints them, one per `NeonButton` variant, and they are
+   shared by the whole product: hero, header, campaign cards, leaderboard, docs, console.
+   (`NeonButton` maps its variants to them; the shadcn `Button` uses them for the same
+   variants so the console buttons match.)
+
+   They exist because the flat utilities they replaced read badly on a dark page: `solid` was
+   one flat fill over a black 2px border with a black lip, `outline` was `bg-transparent`
+   under that same black border — so its label sat straight on whatever was behind it, with
+   no visible edge (`#0a0a0a` on `#0b0a07`) — and `ghost` was `bg-white/5 text-white/70`, a
+   5% wash under 70% text. Every colour here is a token from `:root` (#bdfe00, --neon-dark,
+   --primary-foreground, #0a0a0a), so all five belong to the same palette.
+
+   Each surface is stated in full rather than layered over `.btn-3d` because a box-shadow set
+   here replaces `.btn-3d`'s whole stack, including the one in its `:hover` — inheriting that
+   would drop the inset rim and the glow and jump on hover. Declared outside `@layer`, like
+   `.btn-3d`, so they win over utility classes applied alongside them.
+
+   Geometry is untouched throughout: borders stay 2px and `box-sizing: border-box` keeps that
+   out of the box size, so no button moves or resizes. */
+.btn-surface-solid {
+  /* A lit lip, not a black bar: the depth has to read as part of the lime block. */
+  --btn-edge: #6d9a00;
+  /* `.btn-3d`'s list plus the two properties this surface introduces (text and border
+     colour); a gradient is an image and cannot tween, so the lift and the glow carry it. */
+  transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease,
+    background-color 0.2s ease, color 0.15s ease, border-color 0.15s ease;
+  color: var(--primary-foreground, #0a0a0a);
+  border-color: rgba(255, 255, 255, 0.25);
+  background-color: #bdfe00; /* fallback if the gradient is dropped */
+  background-image: linear-gradient(180deg, #e8ff7d 0%, #bdfe00 52%, #a2e200 100%);
+  box-shadow:
+    0 5px 0 0 var(--btn-edge),
+    0 11px 22px -6px rgba(0, 0, 0, 0.8),
+    0 0 26px -4px rgba(189, 254, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    inset 0 -2px 0 rgba(89, 130, 0, 0.35);
+}
+.btn-surface-solid:hover {
+  transform: translateY(-2px);
+  /* The 10% brighten the variants used to carry as `hover:brightness-110`, which is also the
+     only part of this hover that can tween — a gradient is an image. */
+  filter: brightness(1.1);
+  background-image: linear-gradient(180deg, #f4ffab 0%, #caff1f 52%, #aeea00 100%);
+  box-shadow:
+    0 7px 0 0 var(--btn-edge),
+    0 15px 26px -6px rgba(0, 0, 0, 0.85),
+    0 0 34px -4px rgba(189, 254, 0, 0.6),
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    inset 0 -2px 0 rgba(89, 130, 0, 0.3);
+}
+.btn-surface-solid:active {
+  transform: translateY(3px);
+  box-shadow:
+    0 2px 0 0 var(--btn-edge),
+    0 4px 10px -3px rgba(0, 0, 0, 0.7),
+    0 0 14px -4px rgba(189, 254, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+.btn-surface-outline {
+  /* A soft olive lip: black on this plate would not show against #0b0a07 at all. */
+  --btn-edge: #22300a;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease,
+    background-color 0.2s ease, color 0.15s ease, border-color 0.15s ease;
+  color: #bdfe00;
+  border-color: rgba(189, 254, 0, 0.5);
+  background-color: #161c0b; /* the plate is opaque — this is the whole point */
+  background-image: linear-gradient(180deg, #1e2610 0%, #131809 100%);
+  box-shadow:
+    0 5px 0 0 var(--btn-edge),
+    0 11px 22px -6px rgba(0, 0, 0, 0.8),
+    inset 0 1px 0 rgba(189, 254, 0, 0.16),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.45);
+}
+.btn-surface-outline:hover {
+  transform: translateY(-2px);
+  filter: brightness(1.1);
+  color: #d9ff66;
+  border-color: #bdfe00;
+  background-image: linear-gradient(180deg, #28330f 0%, #1a230b 100%);
+  box-shadow:
+    0 7px 0 0 var(--btn-edge),
+    0 15px 26px -6px rgba(0, 0, 0, 0.85),
+    0 0 22px -6px rgba(189, 254, 0, 0.35),
+    inset 0 1px 0 rgba(189, 254, 0, 0.24);
+}
+.btn-surface-outline:active {
+  transform: translateY(3px);
+  box-shadow:
+    0 2px 0 0 var(--btn-edge),
+    0 4px 10px -3px rgba(0, 0, 0, 0.7),
+    inset 0 1px 0 rgba(189, 254, 0, 0.2);
+}
+
+/* The quiet surface, for chrome like the header's DASHBOARD: an opaque plate with a real
+   border and readable text. It keeps the lowest emphasis of the five — it is still a plate,
+   not a 5% wash under 70% text, because that is the "washed out" read this pass removes. */
+.btn-surface-ghost {
+  --btn-edge: #0a0a0a;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease,
+    background-color 0.2s ease, color 0.15s ease, border-color 0.15s ease;
+  color: #e7e6eb; /* ~14:1 on the plate below, where `text-white/70` was ~8.6:1 */
+  border-color: rgba(255, 255, 255, 0.14);
+  background-color: #15130f;
+  background-image: linear-gradient(180deg, #1c1915 0%, #111009 100%);
+  box-shadow:
+    0 5px 0 0 var(--btn-edge),
+    0 11px 22px -6px rgba(0, 0, 0, 0.75),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+.btn-surface-ghost:hover {
+  transform: translateY(-2px);
+  filter: brightness(1.06); /* gentler than the lime surfaces: the plate is near-black */
+  color: #bdfe00;
+  border-color: rgba(189, 254, 0, 0.45);
+  background-image: linear-gradient(180deg, #242016 0%, #17140d 100%);
+  box-shadow:
+    0 7px 0 0 var(--btn-edge),
+    0 15px 26px -6px rgba(0, 0, 0, 0.8),
+    0 0 18px -6px rgba(189, 254, 0, 0.28),
+    inset 0 1px 0 rgba(189, 254, 0, 0.14);
+}
+.btn-surface-ghost:active {
+  transform: translateY(3px);
+  box-shadow:
+    0 2px 0 0 var(--btn-edge),
+    0 4px 10px -3px rgba(0, 0, 0, 0.65),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+/* The gold ramp, for CTAs that are deliberately not the lime one. Same geometry, same
+   structure; dark text clears 7:1 at the deepest stop. */
+.btn-surface-gold {
+  --btn-edge: #8a6300;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease,
+    background-color 0.2s ease, color 0.15s ease, border-color 0.15s ease;
+  color: #1a1100;
+  border-color: rgba(255, 255, 255, 0.35);
+  background-color: #eab308; /* fallback if the gradient is dropped */
+  background-image: linear-gradient(180deg, #ffe770 0%, #eab308 52%, #c9960a 100%);
+  box-shadow:
+    0 5px 0 0 var(--btn-edge),
+    0 11px 22px -6px rgba(0, 0, 0, 0.8),
+    0 0 26px -4px rgba(234, 179, 8, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    inset 0 -2px 0 rgba(120, 85, 0, 0.35);
+}
+.btn-surface-gold:hover {
+  transform: translateY(-2px);
+  filter: brightness(1.1);
+  background-image: linear-gradient(180deg, #fff0a0 0%, #f5c026 52%, #d6a310 100%);
+  box-shadow:
+    0 7px 0 0 var(--btn-edge),
+    0 15px 26px -6px rgba(0, 0, 0, 0.85),
+    0 0 34px -4px rgba(234, 179, 8, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.75),
+    inset 0 -2px 0 rgba(120, 85, 0, 0.3);
+}
+.btn-surface-gold:active {
+  transform: translateY(3px);
+  box-shadow:
+    0 2px 0 0 var(--btn-edge),
+    0 4px 10px -3px rgba(0, 0, 0, 0.7),
+    0 0 14px -4px rgba(234, 179, 8, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+
+/* Destructive keeps its meaning under the same depth. The ramp is deliberately deeper than
+   the #ff4444 token so white text clears 4.5:1 at its lightest stop (4.83:1) — white on
+   #ff4444 computes to 3.4:1 and would fail on the text of the one button that must be
+   unmistakable. */
+.btn-surface-destructive {
+  --btn-edge: #6b1414;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease,
+    background-color 0.2s ease, color 0.15s ease, border-color 0.15s ease;
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.22);
+  background-color: #b91c1c; /* fallback if the gradient is dropped */
+  background-image: linear-gradient(180deg, #dc2626 0%, #b91c1c 55%, #991b1b 100%);
+  box-shadow:
+    0 5px 0 0 var(--btn-edge),
+    0 11px 22px -6px rgba(0, 0, 0, 0.8),
+    0 0 24px -6px rgba(220, 38, 38, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.25),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.25);
+}
+.btn-surface-destructive:hover {
+  transform: translateY(-2px);
+  /* No `brightness()` here either, and the ramp stops short of #ef4444: white text only holds
+     AA while the red stays at or below #d92b2b (4.85:1). The lift and the wider glow carry
+     the hover instead. */
+  background-image: linear-gradient(180deg, #d92b2b 0%, #c62828 55%, #a51f1f 100%);
+  box-shadow:
+    0 7px 0 0 var(--btn-edge),
+    0 15px 26px -6px rgba(0, 0, 0, 0.85),
+    0 0 30px -6px rgba(220, 38, 38, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.2);
+}
+.btn-surface-destructive:active {
+  transform: translateY(3px);
+  box-shadow:
+    0 2px 0 0 var(--btn-edge),
+    0 4px 10px -3px rgba(0, 0, 0, 0.7),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+/* `outline`, not a ring: a ring is a box-shadow, and it would replace the depth stack above.
+   Every surface gets the same focus treatment, so keyboard users get one consistent, visible
+   indicator across the product. */
+.btn-surface-solid:focus-visible,
+.btn-surface-outline:focus-visible,
+.btn-surface-ghost:focus-visible,
+.btn-surface-gold:focus-visible,
+.btn-surface-destructive:focus-visible {
+  outline: 2px solid #bdfe00;
+  outline-offset: 3px;
+}
+
+/* ===== HERO DOCS LINK =====
+   Solid lime rather than `text-white/70`, with a 2px underline instead of a hairline at
+   25% white. 16.35:1 on the hero's #0b0a07. */
+.hero-docs-link {
+  color: #bdfe00;
+  text-decoration-line: underline;
+  text-decoration-color: rgba(189, 254, 0, 0.6);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 6px;
+}
+.hero-docs-link:hover {
+  color: #e2ff8a;
+  text-decoration-color: #e2ff8a;
+}
+
+/* ===== SITE WORDMARK =====
+   The marketing header's wordmark, in the console's display face.
+
+   `.console .title-display` (see the console section below) is what the dashboard's own
+   "bagwork" is set in: Syne, -0.02em, weight 600. That rule is scoped to `.console`, so the
+   marketing header — which is not inside the console — cannot borrow it, and copying the
+   declaration is cheaper than unscoping a console rule and letting its gradient text-fill
+   leak onto every `title-display` outside the console. Font, tracking and weight are the
+   same three values; the fill is not, because this header's brand colour is the lime accent
+   and the word sits next to the yellow mark rather than replacing it. */
+.brand-wordmark {
+  font-family: var(--font-syne), var(--font-inter), ui-sans-serif, sans-serif;
+  letter-spacing: -0.02em;
+  font-weight: 600;
+}
+
+/* Hover still brightens under reduced motion — only the 2px lift is motion, and it is the
+   part that can bother a vestibular-sensitive reader. */
+@media (prefers-reduced-motion: reduce) {
+  .btn-surface-solid:hover,
+  .btn-surface-outline:hover,
+  .btn-surface-ghost:hover,
+  .btn-surface-gold:hover,
+  .btn-surface-destructive:hover {
+    transform: none;
+  }
+}
+
+/* ===== GLITCH TEXT ===== */
+@keyframes glitch-skew {
+  0%, 100% { transform: skewX(0deg); }
+  42% { transform: skewX(0deg); }
+  43% { transform: skewX(8deg); }
+  44% { transform: skewX(-6deg); }
+  45% { transform: skewX(0deg); }
+}
+@keyframes glitch-shift-1 {
+  0%, 100% { clip-path: inset(0 0 0 0); transform: translate(0); }
+  20% { clip-path: inset(20% 0 60% 0); transform: translate(-2px, 0); }
+  40% { clip-path: inset(50% 0 20% 0); transform: translate(2px, 0); }
+  60% { clip-path: inset(10% 0 80% 0); transform: translate(-1px, 0); }
+  80% { clip-path: inset(70% 0 5% 0); transform: translate(1px, 0); }
+}
+@keyframes glitch-shift-2 {
+  0%, 100% { clip-path: inset(0 0 0 0); transform: translate(0); }
+  20% { clip-path: inset(60% 0 20% 0); transform: translate(2px, 0); }
+  40% { clip-path: inset(10% 0 70% 0); transform: translate(-2px, 0); }
+  60% { clip-path: inset(80% 0 5% 0); transform: translate(1px, 0); }
+  80% { clip-path: inset(30% 0 50% 0); transform: translate(-1px, 0); }
+}
+.glitch {
+  position: relative;
+  display: inline-block;
+}
+.glitch::before,
+.glitch::after {
+  content: attr(data-text);
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.glitch::before {
+  color: #bdfe00;
+  animation: glitch-shift-1 3.5s infinite linear alternate;
+  opacity: 0.7;
+  mix-blend-mode: screen;
+}
+.glitch::after {
+  color: #ff003c;
+  animation: glitch-shift-2 2.7s infinite linear alternate;
+  opacity: 0.5;
+  mix-blend-mode: screen;
+}
+
+/* ===== MARQUEE ===== */
+@keyframes marquee-left {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+.marquee-track {
+  animation: marquee-left 40s linear infinite;
+  /* One element moving by one transform, so this costs a single compositor layer and buys a steady
+     frame rate on a strip that is as wide as the whole list. */
+  will-change: transform;
+}
+.marquee-track:hover {
+  animation-play-state: paused;
+}
+
+/* ===== PULSE DOT ===== */
+@keyframes pulse-dot {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(189, 254, 0, 0.7); }
+  50% { box-shadow: 0 0 0 6px rgba(189, 254, 0, 0); }
+}
+.pulse-dot {
+  animation: pulse-dot 1.8s ease-out infinite;
+}
+
+/* ===== BLOOM ORB =====
+   The pure-CSS sphere from the standalone "Bloom Orb" element: six conic
+   gradients drifting under a blur → contrast filter, topped with a specular
+   highlight and an inner rim. No images, no JS, no dependencies.
+
+   Rethemed for this palette. The base is near-black instead of the reference's
+   navy (#0f0f0f, not #1c1f45) and the five gradient stops are the site's
+   lime-yellow family — `#c8ff00`, `#bdfe00` and their neighbours — so the orb
+   sits inside the landing UI instead of glowing blue on top of it. The two
+   colour literals buried in the highlight layer were moved to match: the ice
+   bottom-glow is lime and the vignette is neutral black. Everything else
+   (geometry, filters, timings, keyframes) is the reference element verbatim.
+
+   Sizing is entirely `--orb-size` on `.orb-slot`: the orb's font-size becomes
+   size / 16 and every blur, glow and rim inside is em-based, so one sphere
+   scales from a 40px card mark to a 400px hero without touching a rule.
+
+   The step card drives it at `--orb-speed: 7s`, not the reference's 20s. That
+   is deliberate: at 40px the drift has to move faster than a hero-sized orb
+   before the eye reads it as alive rather than as a still yellow sphere. */
+@property --orb-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+/* the slot: one place to set size + speed */
+.orb-slot {
+  --orb-size: 32px;   /* any length — the whole orb follows */
+  --orb-speed: 20s;   /* one full gradient drift */
+  --orb-blur: 0.6em;  /* how soft the gradient is — a big sphere wants less of it */
+  width: var(--orb-size);
+  font-size: calc(var(--orb-size) / 16);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.orb {
+  /* palette — the only thing that has to change to retheme the orb */
+  --orb-bg: #0f0f0f;  /* near-black core */
+  --orb-1: #c8ff00;   /* lime          */
+  --orb-2: #f4ffb4;   /* pale lime     */
+  --orb-3: #bdfe00;   /* the site lime */
+  --orb-4: #7d9c00;   /* olive         */
+  --orb-5: #e6ff66;   /* yellow-lime   */
+  /* The three knobs a caller can move, so one animation covers every orb on the page:
+     how it blooms, which way it turns, and where in its own drift it starts. Set them on `.orb-slot`
+     — custom properties inherit, so a value there reaches this element and its pseudo-elements. */
+  --orb-glow: rgba(189, 254, 0, 0.45); /* outer bloom, in the palette's own colour */
+  --orb-spin: 1;                        /* 1 clockwise, -1 anticlockwise */
+  --orb-delay: 0s;                      /* negative starts mid-drift, which desynchronises a row */
+
+  aspect-ratio: 1;
+  width: 100%;
+  background: var(--orb-bg);
+  border-radius: 50%;
+  grid-template-areas: "stack";
+  display: grid;
+  overflow: hidden;
+  box-shadow: 0 0 2.5em -0.5em var(--orb-glow);
+}
+
+.orb::before,
+.orb::after {
+  content: "";
+  border-radius: 50%;
+  grid-area: stack;
+  width: 100%;
+  height: 100%;
+  display: block;
+  transform: translateZ(0); /* GPU */
+}
+
+/* layer 1 — the living gradient core */
+.orb::before {
+  background:
+    conic-gradient(from calc(var(--orb-angle) * 2) at 25% 70%, var(--orb-3), transparent 20% 80%, var(--orb-3)),
+    conic-gradient(from calc(var(--orb-angle) * 2) at 45% 75%, var(--orb-5), transparent 30% 60%, var(--orb-5)),
+    conic-gradient(from calc(var(--orb-angle) * -3) at 80% 20%, var(--orb-1), transparent 40% 60%, var(--orb-1)),
+    conic-gradient(from calc(var(--orb-angle) * 2) at 15% 5%, var(--orb-2), transparent 10% 90%, var(--orb-2)),
+    conic-gradient(from calc(var(--orb-angle) * 1) at 20% 80%, var(--orb-4), transparent 10% 90%, var(--orb-4)),
+    conic-gradient(from calc(var(--orb-angle) * -2) at 85% 10%, var(--orb-3), transparent 20% 80%, var(--orb-3));
+  box-shadow: inset var(--orb-shade, var(--orb-bg)) 0 0 1em 0.2em;
+  filter: blur(var(--orb-blur, 0.6em)) contrast(2.2) saturate(0.8);
+  animation: orb-flow var(--orb-speed) linear infinite;
+  animation-delay: var(--orb-delay);
+}
+
+/* layer 2 — specular highlight + rim + bottom glow (recoloured lime/black).
+
+   The second stop is the `--orb-shade` dark side: unset it (the 27 small orbs never set it) and the
+   sphere is exactly as it was; set it to a dark colour and one big sphere gets a real terminator —
+   a broad shadow opposite the specular at 34% 24% — instead of reading as flat lime. The same value
+   deepens the core shadow on layer 1, so the depth comes from one knob. */
+.orb::after {
+  background:
+    radial-gradient(30% 22% at 34% 24%, rgba(255, 255, 255, 0.5), transparent 100%),
+    radial-gradient(115% 115% at 78% 74%, var(--orb-shade, transparent), transparent 62%),
+    radial-gradient(circle at 50% 115%, rgba(189, 254, 0, 0.28), transparent 45%),
+    radial-gradient(circle at 50% 45%, transparent 55%, rgba(0, 0, 0, 0.5) 100%);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+    inset 0 0.08em 0.2em rgba(255, 255, 255, 0.3);
+}
+
+@keyframes orb-flow {
+  to { --orb-angle: calc(360deg * var(--orb-spin, 1)); }
+}
+
+/* contact shadow — breathes under the orb (only used where the orb stands alone).
+   `display: block` is load-bearing: the reference marks this element up as a `div` and relies on
+   its default block box for the height and width below to mean anything. BloomOrb renders spans
+   (see its doc comment), so the box has to be asked for here. */
+.orb-shadow {
+  display: block;
+  height: 1.2em;
+  width: 70%;
+  margin-top: -0.45em;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.7);
+  filter: blur(24px);
+  animation: orb-breathe 6s ease-in-out infinite;
+}
+@keyframes orb-breathe {
+  0%, 100% { opacity: 0.75; transform: scale(1); }
+  50%      { opacity: 1;    transform: scale(0.96); }
+}
+
+/* A slow two-axis wander, used only by the one large sphere (the how-it-works bloom).
+
+   `orb-flow` on its own is a single closed loop: seen on a 640px sphere from a fixed distance it
+   reads as a still image, because the eye has nothing else to compare it against. This adds an
+   uneven second axis — the sphere drifts a few tens of pixels off its anchor and back, with a slight
+   roll — so the loop never repeats the same path at the same moment.
+
+   Transform-only on purpose: it composites, so the animated 640px blurred layer is never repainted,
+   and the offset is small enough that the sphere breathes in place instead of travelling. */
+.orb-wander {
+  animation: orb-wander 19s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  will-change: transform;
+}
+@keyframes orb-wander {
+  0%   { transform: translate3d(0, 0, 0) rotate(0deg); }
+  25%  { transform: translate3d(17px, -12px, 0) rotate(2.5deg); }
+  50%  { transform: translate3d(3px, 21px, 0) rotate(-1.5deg); }
+  75%  { transform: translate3d(-15px, -5px, 0) rotate(3deg); }
+  100% { transform: translate3d(0, 0, 0) rotate(0deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .orb::before { animation: none; }
+  .orb-shadow { animation: none; }
+  /* The big sphere holds its anchor — and drops its compositor hint, since nothing needs to move. */
+  .orb-wander { animation: none; will-change: auto; }
+  /* The ticker is a list of links, so it stays legible standing still rather than drifting under
+     someone's eyes. Everything it shows is a real bag with a name and a price next to it. */
+  .marquee-track { animation: none; }
+}
+
+/* ===== FLOAT TILT =====
+   The hero's terminal card (`components/site/terminal-window.tsx`) drifts on a 3D perspective
+   tilt, which is what the card had before the hero was ever touched. Restored verbatim rather
+   than re-timed: the 6°/-4° rest pose is what makes the window read as a floating pane instead
+   of a flat panel, and the sway to 4°/-2° is small enough to stay readable while it moves.
+
+   Only `transform` animates, so it stays on the compositor, and it lives on the card's own
+   wrapper so a hover transform can never fight the keyframes. */
+@keyframes float-tilt {
+  0%, 100% { transform: perspective(1200px) rotateX(6deg) rotateY(-4deg) translateY(0); }
+  50% { transform: perspective(1200px) rotateX(4deg) rotateY(-2deg) translateY(-10px); }
+}
+.float-tilt {
+  animation: float-tilt 7s ease-in-out infinite;
+}
+
+/* ===== HERO ENTRANCE =====
+   The hero's content rises into place once, on load, 60ms apart.
+   This is CSS rather than the JS motion library on purpose: the entrance has to be unable to
+   strand the page in its "before" state. A framer prop that depends on `useReducedMotion()`
+   resolves to the *animation* on the server and to *nothing* on the client once the user asks
+   for reduced motion, which leaves the element parked at its SSRed `opacity: 0` — an invisible
+   hero. Here the same media query that stops the card's float also cancels the entrance, and
+   what is left is the final state. No JS, no hydration timing, and it runs with JS disabled. */
+@keyframes hero-rise {
+  from { opacity: 0; transform: translate3d(0, 14px, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+.hero-rise {
+  animation: hero-rise 0.55s cubic-bezier(0.22, 0.61, 0.36, 0.98) both;
+}
+
+/* ===== HERO CARD (landing) =====
+   The Bagworker card in the hero is the page's signature object, so its three effects live
+   here instead of as one-off inline styles:
+
+     .hero-card-float        gently drifts the whole card up and down, forever
+     .hero-card-shine        the static hairline — also the fallback when motion is off
+     .hero-card-shine-spin   a conic gradient rotating inside that hairline
+
+   Only `transform` and `opacity` animate — never width, height or blur — so this stays on the
+   compositor and leaves the main thread to the hero's canvas dot field. */
+@keyframes hero-card-float {
+  0%, 100% { transform: translate3d(0, -9px, 0); }
+  50% { transform: translate3d(0, 9px, 0); }
+}
+.hero-card-float {
+  animation: hero-card-float 7.5s ease-in-out infinite;
+  will-change: transform;
+}
+
+/* The light as a still image: a warm corner falling to shadow, then lime. With motion
+   disabled this alone has to carry the "shiny border" idea, so it is not a placeholder. */
+.hero-card-shine {
+  background: linear-gradient(
+    155deg,
+    rgba(255, 231, 14, 0.5) 0%,
+    rgba(255, 255, 255, 0.09) 26%,
+    rgba(189, 254, 0, 0.32) 58%,
+    rgba(255, 231, 14, 0.44) 100%
+  );
+}
+
+@keyframes hero-card-spin {
+  to { transform: rotate(1turn); }
+}
+.hero-card-shine-spin {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  /* A square twice the card's width, clipped by the wrapper's 1.5px padding. Bigger than the
+     card's corner radius at every angle, so the hairline never goes dark at the diagonals. */
+  width: 200%;
+  aspect-ratio: 1;
+  /* Both percentage margins resolve against the parent's *width*, which is exactly half of
+     this square (it is square by construction) — so it centres without a transform, leaving
+     `transform` free for the rotation itself. */
+  margin: -100% 0 0 -100%;
+  background: conic-gradient(
+    from 0deg,
+    rgba(255, 231, 14, 0) 0deg,
+    rgba(255, 231, 14, 0.9) 42deg,
+    rgba(255, 255, 255, 0.45) 74deg,
+    rgba(255, 231, 14, 0) 130deg,
+    rgba(255, 231, 14, 0) 196deg,
+    rgba(189, 254, 0, 0.75) 248deg,
+    rgba(255, 231, 14, 0) 300deg
+  );
+  animation: hero-card-spin 9s linear infinite;
+}
+
+/* The app has no global reduced-motion guard. The card keeps its glow and its still hairline
+   and simply stops moving; the hero's entrance is cancelled too, so its content is present
+   from the first paint instead of rising into place. `.float-tilt` is the terminal card's own
+   drift — switching it off leaves the window flat and square to the eye, which is the intended
+   still image rather than a blank or a jump. */
+@media (prefers-reduced-motion: reduce) {
+  .hero-rise,
+  .hero-card-float,
+  .hero-card-shine-spin,
+  .float-tilt {
+    animation: none;
+  }
+}
+
+/* ===== BLINK ===== */
+@keyframes blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+.blink {
+  animation: blink 1s step-end infinite;
+}
+
+/* ===== SCAN LINE ===== */
+@keyframes scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+.scanline::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(transparent, rgba(189, 254, 0, 0.06), transparent);
+  height: 30%;
+  animation: scanline 5s linear infinite;
+  pointer-events: none;
+}
+
+/* ===== SHINE SWEEP ===== */
+@keyframes shine-sweep {
+  0% { transform: translateX(-150%) skewX(-20deg); }
+  100% { transform: translateX(250%) skewX(-20deg); }
+}
+.shine-sweep {
+  position: relative;
+  overflow: hidden;
+}
+.shine-sweep::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 40%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.18), transparent);
+  animation: shine-sweep 3.5s ease-in-out infinite;
+  pointer-events: none;
+}
+
+/* ===== TYPING CARET ===== */
+.caret::after {
+  content: "▋";
+  color: #bdfe00;
+  animation: blink 1s step-end infinite;
+  margin-left: 2px;
+}
+
+/* ===== utility text shadow ===== */
+.ts-sm { text-shadow: 0 1px 2px rgba(0,0,0,0.5); }
+
+/* hide scrollbar but keep scroll */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* === bg-darken tweak marker === */
+
+/* ==========================================================================
+   BAGWORK CONSOLE  ·  /dashboard/*
+   The product surface, recoloured to the BAGWORK visual identity: a near-black
+   canvas (#0b0a07, shared with the marketing site) with #ffe70e (the brand
+   yellow) as the single accent, in place of the neutral shadcn grey palette.
+   Colour tokens only — every component still reads the same variables, so
+   layout, spacing and structure are untouched. Scoped to `.console`; the
+   marketing site keeps its lime accent.
+   Contrast on --background (WCAG 2.2 AA): foreground 17.3:1,
+   muted-foreground 9.4:1, brand yellow 15.7:1, status tones 7.1-11.1:1.
+   `:root:has(.console)` re-declares the same tokens on <html> because Radix
+   portals (Select, Dropdown, Sheet, Tooltip) and Sonner mount under <body>,
+   outside the `.console` subtree.
+
+   `.console-scope` carries the same token set for a console component embedded
+   in a marketing page — the homepage's live-bag preview renders the real
+   `BagCard`, and a card reading the marketing tokens would lose its brand and
+   status colours entirely (they are not declared on :root at all). It
+   deliberately does NOT get the `:has()` rule: that one exists for portals, and
+   an embedded card grid has none. Without it, `.console` on a marketing page
+   would repaint every `--border` and `--radius` on the page, not just the cards.
+   ========================================================================== */
+.console,
+:root:has(.console),
+.console-scope {
+  --radius: 0.625rem;
+
+  /* Near-black canvas with only a whisper of warmth, stepped so surface
+     hierarchy stays legible: background < card < muted < secondary < accent.
+     --background is the same value as the marketing site's :root token, so the
+     whole product shares one base. */
+  --background: #0b0a07;
+  --foreground: #f5efe2;
+  --card: #13110c;
+  --card-foreground: #f5efe2;
+  --popover: #17140e;
+  --popover-foreground: #f5efe2;
+
+  /* #ffe70e — the brand yellow — carries primary actions and every accent. */
+  --primary: #ffe70e;
+  --primary-foreground: #0b0a07;
+  --secondary: #1a1710;
+  --secondary-foreground: #f5efe2;
+  --muted: #15130d;
+  --muted-foreground: #bdb29a;
+  --accent: #1e1b13;
+  --accent-foreground: #f5efe2;
+  --destructive: #ff6b5a;
+
+  /* Gold-tinted hairlines. --input is the interactive boundary, so it is opaque
+     enough to clear 3:1 against the canvas on its own. */
+  --border: rgba(255, 231, 14, 0.14);
+  --input: rgba(255, 231, 14, 0.4);
+  --ring: #ffe70e;
+
+  /* Warm chart ramp anchored on the brand yellow. */
+  --chart-1: #ffe70e;
+  --chart-2: #ffb347;
+  --chart-3: #ff8a4c;
+  --chart-4: #d9a441;
+  --chart-5: #8fb339;
+
+  --sidebar: #0d0b08;
+  --sidebar-foreground: #f5efe2;
+  --sidebar-primary: #ffe70e;
+  --sidebar-primary-foreground: #0b0a07;
+  --sidebar-accent: #1a1710;
+  --sidebar-accent-foreground: #f5efe2;
+  --sidebar-border: rgba(255, 231, 14, 0.12);
+  --sidebar-ring: #ffe70e;
+
+  /* Status + brand tokens. Status colour is never the only signal: every
+     badge pairs it with an icon and a text label. These stay semantic
+     (green / amber / blue) rather than turning yellow, so they never read as
+     decoration — each is tuned to sit on the near-black canvas at >= 8.5:1. */
+  --success: #5fd97f;
+  --warning: #ff8c1a;
+  --info: #7fb0ff;
+  --brand: #ffe70e;
+  /** Text on a solid brand fill. Same near-black as `--primary-foreground`. */
+  --brand-foreground: #0b0a07;
+  --gold: #ffe70e;
+}
+
+.console,
+.console-scope {
+  font-family: var(--font-inter), ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Display face — wordmark, page titles, headline figures. */
+.console .font-display,
+.console .title-display {
+  font-family: var(--font-syne), var(--font-inter), ui-sans-serif, sans-serif;
+  letter-spacing: -0.02em;
+}
+.console .title-display {
+  font-weight: 600;
+
+  /* Brand gradient on display headings. `.title-display` already carries the
+     wordmark, every page title and the empty-state headings, so the treatment
+     lands without touching any markup. The solid colour is declared first so a
+     browser without `background-clip: text` shows a plain cream heading rather
+     than an invisible one; every gradient stop clears 10:1 on --background, so
+     AA and AAA both hold across the whole sweep. */
+  color: var(--foreground);
+  background-image: linear-gradient(
+    100deg,
+    #fffdf6 0%,
+    #fff0a8 38%,
+    #ffe70e 70%,
+    #ffb528 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+@supports not ((-webkit-background-clip: text) or (background-clip: text)) {
+  .console .title-display {
+    background-image: none;
+    -webkit-text-fill-color: currentColor;
+    color: var(--foreground);
+  }
+}
+
+/* Warm scrollbars + brand-yellow selection on console routes. The bare
+   `:root:has(.console)::-webkit-scrollbar-*` forms are needed because the
+   dashboard is scrolled by the window, and a pseudo-element cannot be reached
+   through a descendant combinator. */
+.console ::selection,
+:root:has(.console) ::selection {
+  background: rgba(255, 231, 14, 0.85);
+  color: #0b0a07;
+}
+.console ::-webkit-scrollbar-track,
+:root:has(.console) ::-webkit-scrollbar-track,
+:root:has(.console)::-webkit-scrollbar-track {
+  background: transparent;
+}
+.console ::-webkit-scrollbar-thumb,
+:root:has(.console) ::-webkit-scrollbar-thumb,
+:root:has(.console)::-webkit-scrollbar-thumb {
+  background: rgba(245, 239, 226, 0.14);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 9999px;
+}
+.console ::-webkit-scrollbar-thumb:hover,
+:root:has(.console) ::-webkit-scrollbar-thumb:hover,
+:root:has(.console)::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 231, 14, 0.5);
+  background-clip: padding-box;
+}
+
+/* Hairline dot grid used behind page headers. Bumped from 8% to 16% opacity: at 8% the
+   dots vanished entirely on the near-black canvas, so the texture read as a flat panel. */
+.console-dotgrid::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: radial-gradient(rgba(255, 231, 14, 0.16) 1px, transparent 1px);
+  background-size: 20px 20px;
+  -webkit-mask-image: radial-gradient(120% 80% at 50% 0%, #000 0%, transparent 72%);
+  mask-image: radial-gradient(120% 80% at 50% 0%, #000 0%, transparent 72%);
+}
+
+/* Brand wash behind console page headers.
+   Mirrors the bag-card banner treatment — a radial bloom fading to transparent — so page
+   tops and bag cards read as one system, and widens the palette past the single brand
+   yellow to the accent hues already used for avatars (violet, cyan, coral). Painted on a
+   pseudo-element so it never intercepts pointer events. */
+.console-header-wash::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(58% 130% at 10% 0%, rgba(255, 231, 14, 0.18) 0%, transparent 62%),
+    radial-gradient(54% 120% at 42% -12%, rgba(124, 92, 255, 0.2) 0%, transparent 60%),
+    radial-gradient(50% 115% at 74% -4%, rgba(34, 211, 238, 0.16) 0%, transparent 58%),
+    radial-gradient(46% 105% at 100% 12%, rgba(255, 122, 69, 0.14) 0%, transparent 60%);
+}
+
+/* The flywheel card's edge.
+
+   A flywheel bag is a coin, so its card is allowed to read as a token tile rather than a
+   document — but the console's language is restraint, and the identity here is carried by
+   the 1px edge and nothing else. Three things, all of them on that edge:
+
+     · a gold → violet → cyan hairline, brightest at the two opposite corners. That is the
+       "corner treatment": the gradient runs at 135°, so the top-left corner is gold and the
+       bottom-right is cyan, and both fade to a dim tint within 20% of their corner. It reads
+       as a lit bevel rather than a rainbow ring;
+     · a very light brand glow — a large blur at low alpha, so the card lifts off the
+       near-black canvas without becoming a light source;
+     · a 1px white inset at the top, which is the whole trick behind the three-dimensional
+       read. Without it the edge is flat.
+
+   Drawn with the two-layer `background-clip` technique rather than a pseudo-element, and that
+   is deliberate. A `::before`/`::after` is the obvious way to do a decorative card edge, but a
+   pseudo-element paints *over* the card's contents — and this card leads with the coin's
+   artwork, which is the one thing on it that must not be tinted or scrimmed. Painting the
+   colour into the border ring instead means the effect cannot touch the image at all, whatever
+   the card's contents turn out to be.
+
+   The first layer (the card colour, `padding-box`) is the *top* layer, so the gradient beneath
+   it is only visible in the 1px ring the border occupies — CSS paints background layers in
+   reverse order, which is what makes this work. `border-color: transparent` hands the ring to
+   the gradient; a hover that set a border colour would show through it and dull the corners, so
+   hover moves the glow instead. */
+.flywheel-card {
+  border-color: transparent;
+  background-image:
+    linear-gradient(var(--card), var(--card)),
+    linear-gradient(
+      135deg,
+      rgba(255, 231, 14, 0.7) 0%,
+      rgba(255, 231, 14, 0.1) 20%,
+      rgba(124, 92, 255, 0.28) 55%,
+      rgba(34, 211, 238, 0.6) 100%
+    );
+  background-origin: border-box;
+  background-clip: padding-box, border-box;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 1px 2px rgba(0, 0, 0, 0.5),
+    0 12px 30px -24px rgba(255, 231, 14, 0.45);
+  transition: box-shadow 200ms ease;
+}
+
+.flywheel-card:hover {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.09),
+    0 1px 2px rgba(0, 0, 0, 0.5),
+    0 14px 36px -22px rgba(255, 231, 14, 0.65);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flywheel-card {
+    transition: none;
+  }
+}
+
+/* The active sidebar route, marked by a brand rail down its left edge.
+
+   The sidebar already tints the active row, but that tint is a near-black on near-black
+   (`--sidebar-accent` #1a1710 against `--sidebar` #0d0b08) and it is close to invisible once the
+   panel is folded to the icon rail, where the label that carried most of the meaning has gone. A
+   2px brand rail reads at both widths and costs no layout: it is a pseudo-element on the menu item,
+   which is already `position: relative`.
+
+   `:has()` rather than a class on the item, because `data-active` lives on the button the component
+   renders and the item is its parent — the same `:has()` the console tokens already rely on two
+   blocks up. A browser without it loses nothing but the rail; the tint underneath is unchanged. */
+.console [data-sidebar="menu-item"]:has(> [data-sidebar="menu-button"][data-active="true"])::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 2px;
+  height: 1.25rem;
+  transform: translateY(-50%);
+  border-radius: 9999px;
+  background: var(--brand);
+}
+
+/* ===== DOCS SURFACE =====
+   The docs page is long-form reading, so body copy uses Inter — Space Mono at
+   document length is genuinely hard to read. The terminal-mono brand voice is
+   kept deliberately on labels, eyebrows, numbers and headings via `.docs-mono`. */
+.docs {
+  font-family: var(--font-inter), ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  letter-spacing: 0;
+}
+.docs .docs-mono {
+  font-family: var(--font-space-mono), ui-monospace, "SF Mono", Menlo, monospace;
+  font-feature-settings: "ss01", "cv01";
+}
+
+/* The app has no global reduced-motion guard, so the CSS animations used inside
+   the docs figures (`.pulse-dot` loops forever) would ignore the user's setting.
+   Framer-driven motion is already handled in code via `useReducedMotion`. */
+@media (prefers-reduced-motion: reduce) {
+  .docs *,
+  .docs *::before,
+  .docs *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+

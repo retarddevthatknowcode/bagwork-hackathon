@@ -1,0 +1,23 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "regions": ["iad1"],
+  "crons": [
+    { "path": "/api/fees/sync", "schedule": "0 0 * * *" },
+    { "path": "/api/payouts/run", "schedule": "0 1 * * *" }
+  ],
+  "redirects": [
+    {
+      "source": "/:path((?!api/).*)",
+      "has": [{ "type": "host", "value": "bagwork-eta.vercel.app" }],
+      "destination": "https://bag-work.fun/:path",
+      "permanent": true
+    },
+    {
+      "source": "/:path((?!api/).*)",
+      "has": [{ "type": "host", "value": "www.bag-work.fun" }],
+      "destination": "https://bag-work.fun/:path",
+      "permanent": true
+    }
+  ]
+}
+

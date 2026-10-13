@@ -1,0 +1,1184 @@
+/*
+ * Fumadocs' stylesheet, scoped to /docs — and the Bagwork docs design system on top of it.
+ *
+ * Two jobs in one file:
+ *
+ *   1. **Load Fumadocs' CSS without leaking it.** This stylesheet is imported by
+ *      `src/app/docs/layout.tsx` only, so it compiles into the /docs route and is never loaded by
+ *      the marketing site or the console. What still needs Fumadocs is small: the `fd-step` /
+ *      `fd-steps` classes the steps list in section 07 is built from, and the `--color-fd-*` palette
+ *      those styles read. `fumadocs-ui/css/shadcn.css` is Fumadocs' own shadcn bridge: every token it
+ *      declares is namespaced `--color-fd-*` and sourced from a variable this app already owns
+ *      (`--background`, `--primary`, `--border`, `--card`, `--ring`, `--sidebar`), so Fumadocs
+ *      inherits the Bagwork palette instead of shipping its neutral grey default.
+ *
+ *      `DocsLayout` and `RootProvider` are **not** used any more — see `docs-shell.tsx`. The chrome
+ *      is a static column this project owns, so there is no Fumadocs layout, sidebar, sticky shell or
+ *      provider on the page left to style.
+ *
+ *   2. **Dress it.** Everything below the "Docs design tokens" banner is the docs' own visual
+ *      system — type scale, section rhythm, cards, bars, table, callouts, the rail. All of it is
+ *      `bw-` prefixed so nothing can collide with a Tailwind utility or a Fumadocs class.
+ *
+ * ## Two entries, one cascade — and the layer that keeps them apart
+ *
+ * This is the app's second Tailwind entry: it has to be, because the Fumadocs theme is imported here
+ * and nowhere else. But two entries means two copies of every utility class, and when both land in
+ * the `utilities` layer the copy in the later stylesheet wins. That is this file — so it was quietly
+ * overriding rules it had no business touching. Fumadocs' components use `hidden`, this entry
+ * therefore emitted `.hidden`, and on /docs that beat the `@media (width >= 80rem)` rule in
+ * `globals.css` defining `.xl\:flex`: the site header rendered its logo and no menu.
+ *
+ * Those utilities cannot simply be left out: the `--color-fd-*` palette and the `fd-*` utilities the
+ * Fumadocs CSS below depends on are generated from these sources, and no other entry in this project
+ * generates them. Instead the
+ * generated utilities are aimed at a reserved layer, **`fd-docs`**, which `globals.css` declares
+ * between `components` and `utilities` before it imports Tailwind. Cascading below the app's own
+ * utilities, they behave identically for the docs and can never outrank what the app defines.
+ *
+ * `theme.css` is imported because this has to be a Tailwind file at all — Fumadocs' own `@theme`,
+ * `@apply` and `@plugin` rules need a compiler with a theme. Only `theme.css`: importing Fumadocs'
+ * matching half, `preflight.css`, would emit its `* { padding: 0 }` **unlayered**, and unlayered CSS
+ * outranks every layer — which silently killed `p-4` and `px-2.5` on this page. The root layout
+ * already ships preflight in the `base` layer for the whole app.
+ */
+@import "tailwindcss/theme.css" source(none);
+@import "fumadocs-ui/css/shadcn.css";
+@import "fumadocs-ui/css/preset.css";
+
+/*
+ * One shim, for one utility.
+ *
+ * `fumadocs-ui@16.16.1` is built against Tailwind `^4.3.3`; this app is on 4.1.18. Of every
+ * `@apply` in the Fumadocs theme, exactly one class is unknown here — the negative logical inset in
+ * `fd-step`'s bullet (`@apply size-8 -inset-s-4 rounded-full`). Tailwind errors on an unresolvable
+ * `@apply`, so without this the Fumadocs theme above fails to compile. The alternative was bumping
+ * Tailwind across the whole product for one utility.
+ *
+ * `@utility` is a *definition*, not a generated class, so it costs nothing: it exists for `@apply`
+ * to find and is emitted only if something actually asks for the class, which nothing here does.
+ */
+@utility -inset-s-4 {
+  inset-inline-start: calc(var(--spacing) * -4);
+}
+
+/* Everything this entry must generate: the Fumadocs components' classes, and the classes this
+   page's own components use. `source(none)` on the import above keeps Tailwind from scanning the
+   whole project a second time — the app's utilities already ship in `globals.css`. */
+@source "../../../node_modules/fumadocs-ui/dist";
+@source "../../components/docs";
+@source "../../app/docs";
+
+/*
+ * `@tailwind utilities` is the marker `tailwindcss/utilities.css` consists of — `index.css` writes it
+ * as `@layer utilities { @tailwind utilities }`, which is exactly this shape with the layer swapped.
+ * The classes are generated into whichever layer encloses the marker, and `fd-docs` is the one
+ * reserved for them.
+ */
+@layer fd-docs {
+  @tailwind utilities;
+}
+
+/* ==========================================================================
+   Docs design tokens
+   ==========================================================================
+
+   Declared on `.bw-docs` — the element this route's own chrome renders, which exists on this page
+   and nowhere else — rather than on `:root`, so they cannot reach a route that does not render the
+   docs.
+
+   Colour: the page is the same warm near-black as the rest of the product (`--background`,
+   #0b0a07); panels sit one step *up* from it rather than being outlined twice; lime is the single
+   accent; gold is reserved for `$BAG` and the burn. Nothing in here introduces a new hue.
+   ========================================================================== */
+.bw-docs {
+  --bw-heading: #f5f3ee;
+  --bw-body: rgba(224, 223, 227, 0.78);
+  --bw-body-dim: rgba(224, 223, 227, 0.6);
+  --bw-line: rgba(255, 255, 255, 0.075);
+  --bw-line-strong: rgba(255, 255, 255, 0.13);
+  --bw-panel: #141209;
+  --bw-panel-top: #18150e;
+  --bw-lime: #bdfe00;
+  --bw-gold: #ffe70e;
+  --bw-measure: 70ch;
+  --bw-radius: 14px;
+}
+
+/* ==========================================================================
+   The rail
+   ==========================================================================
+
+   One row: a sticky section list, and the document.
+
+   From `1024px` up the rail is `position: sticky` and pins itself 32px under the marketing header
+   while the reader scrolls the article. The reasoning for every value is on the rule itself, in the
+   media query below; the shape is what matters here — **one** sticky box, plain CSS, no height
+   derived from a viewport variable a script writes, and no scroll container anywhere between it and
+   the root.
+
+   `html` sets `overflow-x: clip` rather than `overflow-x: hidden` for exactly this (see the note in
+   `globals.css`): the body never becomes a scroll container, so the viewport stays the single
+   scroller every `sticky` offset on this page is measured against.
+
+   Below `1024px` the rail is `display: none` and the same list renders inside a native `<details>`
+   disclosure instead, which is not positioned at all.
+   ========================================================================== */
+.bw-docs-body {
+  padding-inline: 1.5rem;
+}
+
+.bw-docs-col {
+  width: 100%;
+  min-width: 0;
+  max-width: 768px;
+  margin-inline: auto;
+}
+
+.bw-rail {
+  display: none;
+}
+
+.bw-rail-compact {
+  margin: 1.25rem 1rem 0;
+  border: 1px solid var(--bw-line);
+  border-radius: var(--bw-radius);
+  background: linear-gradient(180deg, var(--bw-panel-top) 0%, var(--bw-panel) 100%);
+}
+
+.bw-rail-compact > summary {
+  cursor: pointer;
+  padding: 0.75rem 0.875rem;
+  font-family: var(--font-space-mono), ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--bw-body-dim);
+}
+
+.bw-rail-compact > summary:hover {
+  color: var(--bw-heading);
+}
+
+.bw-rail-compact > nav {
+  padding: 0 0.5rem 0.75rem;
+}
+
+@media (min-width: 1024px) {
+  .bw-docs {
+    display: flex;
+    align-items: flex-start;
+  }
+
+  /*
+   * The rail, pinned.
+   *
+   * `268px` is the width Fumadocs' grid gave the rail, so the reading column keeps the position it
+   * had — the middle of whatever is left of the row.
+   *
+   * `sticky`, not `fixed`: the rail has to travel inside the row it belongs to and leave with it, so
+   * it can never end up drawn over the site footer. A `fixed` rail would need a hand-maintained
+   * bottom offset and would still be on screen over the footer.
+   *
+   * `align-items: flex-start` on `.bw-docs` is what makes this work. The rail keeps its own content
+   * height instead of being stretched to the document's, so its sticky box has the whole of
+   * `.bw-docs` — the full height of the article — to travel in. (Putting `sticky` on a wrapper
+   * *inside* `.bw-rail` would give it no travel at all: that wrapper's containing block is
+   * `.bw-rail`, which is only as tall as the rail.)
+   *
+   * `top: 6rem` clears the marketing header — `h-16`, 64px, sticky at `top-0` — with 32px of air, and
+   * matches the `scroll-mt-28` the sections carry, so a section arriving from a rail link lands
+   * level with the top of the rail.
+   *
+   * `max-height` + `overflow-y: auto` is the whole of "scrolls only if it needs to": a rail that fits
+   * its window shows no scrollbar and is simply pinned, and a short window scrolls the list rather
+   * than moving the page. `overscroll-behavior: contain` stops a rail that has reached its end from
+   * handing the wheel to the document mid-gesture.
+   *
+   * The bottom padding drops from 4rem to 1rem here because it is inside the scroll box now: the
+   * 64px of empty space that used to trail the list would be 64px of blank you could scroll into.
+   * The padding is invisible either way — the rail has no background of its own.
+   */
+  .bw-rail {
+    position: sticky;
+    top: 6rem;
+    display: block;
+    flex: none;
+    width: 268px;
+    max-height: calc(100vh - 7.5rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 1.5rem 1rem 1rem 0.9375rem;
+  }
+
+  .bw-rail-compact {
+    display: none;
+  }
+
+  .bw-docs-body {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+}
+
+/* The list, shared by the desktop rail and the mobile disclosure. */
+.bw-rail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.bw-rail-list ul {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.bw-rail-label {
+  margin-bottom: 0.5rem;
+  padding-inline: 0.625rem;
+  font-family: var(--font-space-mono), ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--bw-body-dim);
+}
+
+/*
+ * A rail entry.
+ *
+ * Fixed metrics, and **no metric change on any state**: hover, focus and the active marker move
+ * colour, background and an absolutely positioned bar only. The item this replaces went
+ * `font-semibold` when marked active, which rewrapped its label and resized the row — inside a sticky
+ * column — every time the reader crossed a section boundary. That was the "page jumps while
+ * scrolling" report, and it is the one thing this rail must never do, which is why the active state
+ * below is built out of properties that cannot change a box.
+ *
+ * The title truncates instead of wrapping, so every row is the same height no matter which section it
+ * names.
+ */
+.bw-rail-link {
+  /* The active bar below is positioned against this. `relative` with no offsets is a no-op on
+     layout — nothing here can move. */
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 0.625rem;
+  border-radius: 8px;
+  padding: 0.375rem 0.625rem;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--bw-body-dim);
+  text-decoration: none;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
+}
+
+.bw-rail-link:hover {
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--bw-heading);
+}
+
+.bw-rail-link:focus-visible {
+  outline: 2px solid rgba(189, 254, 0, 0.55);
+  outline-offset: 1px;
+}
+
+/*
+ * The active entry — the section the reader is looking at.
+ *
+ * `aria-current` is the only thing the scrollspy writes (`docs-rail.tsx`), so the entire visual
+ * difference between the current section and the other eleven lives here in CSS, and the attribute
+ * that styles it is the same one a screen reader announces.
+ *
+ * Colour, a background tint and a 2px bar: no `font-weight`, no size, no padding, no border —
+ * nothing that could change the row's height or rewrap its label. The bar is a pseudo-element pinned
+ * with `inset-block`, so it is out of flow entirely and contributes no box. The state is also not
+ * carried by colour alone: tint, bar and text colour all change together.
+ *
+ * Lime, not gold. Gold is `$BAG`'s colour on this page — `--bw-gold` is spent on the burn and the
+ * token — and lime is the docs' own accent. `--bw-heading` for the text is the same colour the
+ * `:hover` state already uses, so the two never disagree about what "this one" looks like.
+ */
+.bw-rail-link[aria-current="true"] {
+  background: rgba(189, 254, 0, 0.07);
+  color: var(--bw-heading);
+}
+
+.bw-rail-link[aria-current="true"]::before {
+  content: "";
+  position: absolute;
+  inset-block: 0.25rem;
+  inset-inline-start: 0;
+  width: 2px;
+  border-radius: 999px;
+  background: var(--bw-lime);
+}
+
+/* The number is the one part of a row that is dimmed; the active one is not. Opacity and colour
+   again — no metric. */
+.bw-rail-link[aria-current="true"] .bw-rail-num {
+  color: var(--bw-lime);
+  opacity: 1;
+}
+
+.bw-rail-num {
+  flex: none;
+  width: 1rem;
+  font-family: var(--font-space-mono), ui-monospace, monospace;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.55;
+}
+
+.bw-rail-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The display face. Syne is already loaded by the root layout (`--font-syne`) but is only ever
+   applied inside `.console`; the docs are the product's second long-form surface, so the wordmark's
+   typeface belongs here rather than a generic sans. */
+.bw-display {
+  font-family: var(--font-syne), var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: -0.022em;
+}
+
+.bw-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 5.5rem;
+  /*
+   * `gap` is *between* sections, so it never applied after the last one: the Summary card ended
+   * 16px above the site footer and the page looked clipped rather than finished. This is the
+   * missing beat.
+   */
+  padding-bottom: 4rem;
+}
+
+/* ==========================================================================
+   Hero
+   ==========================================================================
+
+   `padding-top` is the beat under the marketing header — without it the pill sat flush against the
+   bottom of the sticky bar, which reads as the header spilling into the page. `padding-bottom` is
+   the first of the page's section gaps.
+
+   There is deliberately **no background layer** on this block any more. It used to carry two
+   pseudo-elements — a lime/gold radial bloom and a masked hairline dot grid, 22rem tall and pulled
+   up with `inset: -5rem 0 auto 0`. That negative top edge is the whole reason a washed band appeared
+   *above* the title, under the header: the atmosphere started 80px higher than the block it belonged
+   to, so the first thing a reader saw was a soft glow on a page that had not begun. The fix is not
+   to re-offset it — the page wants a flat background here — so both layers are gone, and with them
+   the `position`/`isolation` that existed only to hold them behind the copy.
+   ========================================================================== */
+.bw-hero {
+  padding-top: 2rem;
+  padding-bottom: 3.5rem;
+}
+
+.bw-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid var(--bw-line-strong);
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 0.3125rem 0.75rem;
+  font-family: var(--font-space-mono), ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--bw-body-dim);
+}
+
+.bw-pill-dot {
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 9999px;
+  background: var(--bw-lime);
+}
+
+.bw-hero-title {
+  margin-top: 1.375rem;
+  font-family: var(--font-syne), var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  font-size: clamp(2rem, 1.4rem + 2.4vw, 3.25rem);
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+  color: var(--bw-heading);
+}
+
+/* The one place the brand gradient is spent. Section titles stay solid, so the page has exactly one
+   loud element — the same restraint the console uses on its own page titles. */
+.bw-hero-title-accent {
+  background-image: linear-gradient(100deg, #fffdf6 0%, #fff0a8 34%, #ffe70e 64%, #ffb528 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: var(--bw-gold);
+}
+
+@supports not ((-webkit-background-clip: text) or (background-clip: text)) {
+  .bw-hero-title-accent {
+    background-image: none;
+    -webkit-text-fill-color: currentColor;
+  }
+}
+
+.bw-hero-sub {
+  margin-top: 1.125rem;
+  max-width: 62ch;
+  color: var(--bw-body);
+  font-size: 1rem;
+  line-height: 1.75;
+}
+
+.bw-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-top: 2.25rem;
+}
+
+@media (min-width: 900px) {
+  .bw-stats {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.bw-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  border: 1px solid var(--bw-line);
+  border-radius: var(--bw-radius);
+  background: linear-gradient(180deg, var(--bw-panel-top) 0%, var(--bw-panel) 100%);
+  padding: 0.875rem 1rem 1rem;
+}
+
+.bw-stat-icon {
+  width: 0.875rem;
+  height: 0.875rem;
+  color: var(--bw-lime);
+  opacity: 0.85;
+}
+
+.bw-stat-value {
+  font-family: var(--font-space-mono), ui-monospace, monospace;
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--bw-heading);
+}
+
+.bw-stat-label {
+  font-size: 0.6875rem;
+  line-height: 1.45;
+  color: var(--bw-body-dim);
+}
+
+
+/* ==========================================================================
+   Section header + prose
+   ========================================================================== */
+
+/* The section index. Mono, lime, and followed by a hairline that ties it to the heading below —
+   the small detail that makes a heading read as a header rather than as bold text. */
+.bw-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.625rem;
+  font-family: var(--font-space-mono), ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: var(--bw-lime);
+}
+
+.bw-eyebrow::after {
+  content: "";
+  width: 1.25rem;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(189, 254, 0, 0.55), transparent);
+}
+
+.bw-h2 {
+  font-family: var(--font-syne), var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  font-size: clamp(1.375rem, 1.1rem + 0.9vw, 1.75rem);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.022em;
+  color: var(--bw-heading);
+}
+
+.bw-deck {
+  max-width: 64ch;
+  font-size: 0.9375rem;
+  line-height: 1.65;
+  color: var(--bw-body-dim);
+}
+
+.bw-p {
+  max-width: var(--bw-measure);
+  font-size: 1rem;
+  line-height: 1.78;
+  color: var(--bw-body);
+}
+
+.bw-list {
+  max-width: var(--bw-measure);
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+.bw-list > li {
+  display: flex;
+  gap: 0.75rem;
+  font-size: 1rem;
+  line-height: 1.75;
+  color: var(--bw-body);
+}
+
+.bw-list-dot {
+  flex-shrink: 0;
+  width: 0.3125rem;
+  height: 0.3125rem;
+  margin-top: 0.6875rem;
+  border-radius: 9999px;
+  background: var(--bw-lime);
+  opacity: 0.75;
+}
+
+/*
+ * A legacy anchor address for a section.
+ *
+ * Zero-height and out of flow, so it adds nothing to the layout — it exists only so an href written
+ * against an older section number (`#11-points-levels-profile-value`, `#12-weekly-quests`, both
+ * linked from inside the product) still scrolls to the right block. `scroll-margin-top` matches the
+ * section's own `scroll-mt-28` so both addresses stop at the same place under the sticky rail.
+ */
+.bw-anchor-alias {
+  display: block;
+  height: 0;
+  overflow: hidden;
+  scroll-margin-top: 7rem;
+}
+
+
+/* ==========================================================================
+   Cards — campaign types (two-up) and quests (three-up)
+   ========================================================================== */
+.bw-pair,
+.bw-trio {
+  display: grid;
+  gap: 0.875rem;
+  align-items: stretch;
+}
+
+.bw-pair {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.bw-trio {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (min-width: 720px) {
+  .bw-pair {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 820px) {
+  .bw-trio {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/*
+ * The card.
+ *
+ * Panels are raised with a vertical gradient rather than a heavier border: on a near-black page a
+ * 1px hairline at 7.5% reads as a crease, while the gradient reads as a surface catching light from
+ * above. The hover state lifts 2px and warms the hairline — `transform` and `border-color` only, so
+ * it stays on the compositor.
+ */
+.bw-card,
+.bw-quest {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  border: 1px solid var(--bw-line);
+  border-radius: var(--bw-radius);
+  background: linear-gradient(180deg, var(--bw-panel-top) 0%, var(--bw-panel) 100%);
+  padding: 1.125rem 1.125rem 1.25rem;
+  transition:
+    border-color 180ms ease,
+    transform 180ms ease;
+}
+
+.bw-card:hover,
+.bw-quest:hover {
+  border-color: rgba(189, 254, 0, 0.26);
+  transform: translateY(-2px);
+}
+
+.bw-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid rgba(189, 254, 0, 0.22);
+  border-radius: 10px;
+  background: rgba(189, 254, 0, 0.08);
+  color: var(--bw-lime);
+}
+
+.bw-card-kicker {
+  margin-top: 0.125rem;
+  font-family: var(--font-space-mono), ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--bw-body-dim);
+}
+
+.bw-card-title,
+.bw-quest-title {
+  font-family: var(--font-syne), var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  font-size: 1.0625rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--bw-heading);
+}
+
+.bw-card-body {
+  font-size: 0.875rem;
+  line-height: 1.68;
+  color: var(--bw-body-dim);
+}
+
+/* Quests: the name and the reward on one line, so three cards of different rule lengths still
+   compare at a glance. */
+.bw-quest {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-content: start;
+  column-gap: 0.75rem;
+}
+
+.bw-quest .bw-card-icon {
+  grid-column: 1 / -1;
+}
+
+.bw-quest .bw-card-body {
+  grid-column: 1 / -1;
+}
+
+.bw-quest-reward {
+  align-self: center;
+  border: 1px solid rgba(189, 254, 0, 0.25);
+  border-radius: 9999px;
+  background: rgba(189, 254, 0, 0.1);
+  padding: 0.125rem 0.5rem;
+  font-family: var(--font-space-mono), ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--bw-lime);
+  white-space: nowrap;
+}
+
+/* ==========================================================================
+   Fee split — two bars
+   ========================================================================== */
+.bw-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 1.125rem;
+}
+
+.bw-bar-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.bw-bar-label {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--bw-heading);
+}
+
+.bw-bar-value {
+  font-family: var(--font-space-mono), ui-monospace, monospace;
+  font-size: 0.9375rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--bw-lime);
+}
+
+.bw-bar-track {
+  margin-top: 0.5rem;
+  height: 4px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.07);
+  overflow: hidden;
+}
+
+.bw-bar-fill {
+  display: block;
+  height: 100%;
+  width: 50%;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, rgba(189, 254, 0, 0.55), var(--bw-lime));
+}
+
+.bw-bar-fill[data-tone="gold"] {
+  background: linear-gradient(90deg, rgba(255, 231, 14, 0.5), var(--bw-gold));
+}
+
+.bw-bar-note {
+  margin-top: 0.5rem;
+  max-width: 62ch;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--bw-body-dim);
+}
+
+
+/* ==========================================================================
+   Levels table
+   ==========================================================================
+
+   Six rows of "a threshold and a number" are a table, and a reader comparing thresholds wants them
+   aligned. No zebra stripes — a row hover does the same job without the spreadsheet look.
+   ========================================================================== */
+.bw-table-wrap {
+  border: 1px solid var(--bw-line);
+  border-radius: var(--bw-radius);
+  background: linear-gradient(180deg, var(--bw-panel-top) 0%, var(--bw-panel) 100%);
+  overflow: hidden;
+}
+
+.bw-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9375rem;
+}
+
+.bw-table th,
+.bw-table td {
+  padding: 0.625rem 1rem;
+  text-align: left;
+  border-bottom: 1px solid var(--bw-line);
+}
+
+.bw-table thead th {
+  background: rgba(255, 255, 255, 0.02);
+  font-family: var(--font-space-mono), ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--bw-body-dim);
+}
+
+.bw-table tbody tr {
+  transition: background-color 140ms ease;
+}
+
+.bw-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.bw-table tbody tr:last-child th,
+.bw-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.bw-table tbody th {
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--bw-heading);
+}
+
+.bw-table-num {
+  font-family: var(--font-space-mono), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  color: var(--bw-lime);
+}
+
+.bw-table tbody td:last-child {
+  color: var(--bw-body);
+}
+
+/* ==========================================================================
+   Callouts
+   ========================================================================== */
+.bw-note {
+  display: flex;
+  gap: 0.875rem;
+  border: 1px solid var(--bw-line-strong);
+  border-radius: var(--bw-radius);
+  background: linear-gradient(180deg, rgba(24, 21, 14, 0.92) 0%, rgba(17, 15, 10, 0.92) 100%);
+  padding: 0.875rem 1rem;
+}
+
+.bw-note[data-tone="info"] {
+  border-color: rgba(189, 254, 0, 0.22);
+}
+
+.bw-note[data-tone="warn"] {
+  border-color: rgba(255, 181, 40, 0.28);
+}
+
+.bw-note[data-tone="idea"] {
+  border-color: rgba(255, 231, 14, 0.24);
+}
+
+.bw-note-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 1px solid var(--bw-line-strong);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.bw-note[data-tone="info"] .bw-note-icon {
+  color: var(--bw-lime);
+  border-color: rgba(189, 254, 0, 0.25);
+  background: rgba(189, 254, 0, 0.08);
+}
+
+.bw-note[data-tone="warn"] .bw-note-icon {
+  color: #ffb528;
+  border-color: rgba(255, 181, 40, 0.28);
+  background: rgba(255, 181, 40, 0.08);
+}
+
+.bw-note[data-tone="idea"] .bw-note-icon {
+  color: var(--bw-gold);
+  border-color: rgba(255, 231, 14, 0.26);
+  background: rgba(255, 231, 14, 0.08);
+}
+
+.bw-note-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--bw-heading);
+}
+
+.bw-note-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.375rem;
+  max-width: 66ch;
+  font-size: 0.875rem;
+  line-height: 1.68;
+  color: var(--bw-body);
+}
+
+/* ==========================================================================
+   The closing panel
+   ========================================================================== */
+.bw-closing {
+  border: 1px solid var(--bw-line-strong);
+  border-radius: 18px;
+  background:
+    radial-gradient(120% 130% at 0% 0%, rgba(189, 254, 0, 0.07) 0%, transparent 55%),
+    linear-gradient(180deg, var(--bw-panel-top) 0%, var(--bw-panel) 100%);
+  padding: 1.5rem 1.5rem 1.625rem;
+}
+
+.bw-closing-text {
+  max-width: var(--bw-measure);
+  font-size: 1.0625rem;
+  line-height: 1.8;
+  color: rgba(245, 243, 238, 0.88);
+}
+
+/* ==========================================================================
+   The profile cast
+   ==========================================================================
+
+   Four Bagworkers taking turns, in section 11. Every layer runs the same `@keyframes`; the only
+   thing that differs between them is the delay, which the component passes in as an inline value —
+   it owns the length of a slot, this file owns the shape of the fade.
+
+   `opacity` is the only property animated, so all of it is compositor work: no layout, no paint,
+   nothing that can make the page stutter while it scrolls.
+   ========================================================================== */
+.bw-cast {
+  display: flex;
+  align-items: center;
+  gap: 1.125rem;
+  border: 1px solid var(--bw-line);
+  border-radius: var(--bw-radius);
+  background: linear-gradient(180deg, var(--bw-panel-top) 0%, var(--bw-panel) 100%);
+  padding: 1.125rem 1.25rem;
+}
+
+/*
+ * One animated layer.
+ *
+ * `opacity: 0` is the authored state rather than `1` on purpose: it is what the reduced-motion block
+ * at the end of this file falls back to when it switches the animation off. The animation is the
+ * only thing that makes a layer visible.
+ */
+.bw-cast-layer {
+  opacity: 0;
+  animation-name: bw-cast-cycle;
+  animation-iteration-count: infinite;
+  animation-timing-function: linear;
+}
+
+/*
+ * The shape of one slot out of four.
+ *
+ * Visible from the top of its own slot, held to 20%, faded out by 25% — and faded back in over the
+ * last 6%, which in absolute time lands on the *previous* layer's fade-out. That overlap is the
+ * crossfade: at a 4.2s slot it is a ~0.85s ramp, which reads as a slow dissolve rather than a cut.
+ */
+@keyframes bw-cast-cycle {
+  0% {
+    opacity: 1;
+  }
+  20% {
+    opacity: 1;
+  }
+  25% {
+    opacity: 0;
+  }
+  94% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.bw-cast-pfp {
+  position: relative;
+  flex: none;
+  width: 3.5rem;
+  height: 3.5rem;
+  overflow: hidden;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.bw-cast-face {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.bw-cast-meta {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.4375rem;
+}
+
+.bw-cast-kicker {
+  font-family: var(--font-space-mono), ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--bw-body-dim);
+}
+
+/* Fixed height, because its four children are absolutely positioned — see the component for why. */
+.bw-cast-lines {
+  position: relative;
+  height: 2.5rem;
+}
+
+.bw-cast-line {
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.bw-cast-handle {
+  font-family: var(--font-syne), var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.25rem;
+  letter-spacing: -0.012em;
+  color: var(--bw-heading);
+}
+
+.bw-cast-number {
+  font-family: var(--font-space-mono), ui-monospace, monospace;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.125rem;
+  color: var(--bw-lime);
+}
+
+.bw-cast-bars {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.bw-cast-bar {
+  width: 0.875rem;
+  height: 2px;
+  overflow: hidden;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.13);
+}
+
+.bw-cast-bar > i {
+  display: block;
+  height: 100%;
+  background: var(--bw-lime);
+}
+
+
+/* ==========================================================================
+   Steps — a real vertical rail
+   ==========================================================================
+
+   `fd-steps` already draws the hairline rail and the counter; what it does not do is colour the
+   nodes or give the steps room, because it expects to sit inside Fumadocs' `prose`. These rules are
+   deliberately **unlayered** — the utility lives in `@layer utilities`, and an unlayered rule is the
+   only way to beat it without `!important`. Scoped to `.bw-docs` so nothing leaks.
+   ========================================================================== */
+.bw-docs .fd-steps {
+  border-color: var(--bw-line);
+}
+
+.bw-docs .fd-step:not(:last-child) {
+  padding-bottom: 1.75rem;
+}
+
+.bw-docs .fd-step::before {
+  background-color: rgba(189, 254, 0, 0.1);
+  border: 1px solid rgba(189, 254, 0, 0.3);
+  color: var(--bw-lime);
+  font-family: var(--font-space-mono), ui-monospace, monospace;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+/* The content *inside* a step, kept in `@layer components` so a utility could still override it. */
+@layer components {
+  .bw-docs .fd-step h3 {
+    color: var(--bw-heading);
+    font-family: var(--font-syne), var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    line-height: 1.4;
+    letter-spacing: -0.012em;
+  }
+
+  .bw-docs .fd-step p {
+    margin-top: 0.375rem;
+    max-width: 62ch;
+    color: var(--bw-body);
+    font-size: 0.9375rem;
+    line-height: 1.7;
+  }
+}
+
+/* ==========================================================================
+   Anchor scrolling
+   ==========================================================================
+
+   `globals.css` already sets `html { scroll-behavior: smooth }` app-wide, and this is a long single
+   document with twelve in-page anchors, so the behaviour is wanted here twice over. It is restated
+   under `:has()` for one reason only: the reduced-motion block below has to be able to switch it
+   back off **for this route**, and overriding a rule you do not own is how an `!important` gets
+   written.
+   ========================================================================== */
+html:has(.bw-docs) {
+  scroll-behavior: smooth;
+}
+
+/* ==========================================================================
+   Reduced motion
+   ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  html:has(.bw-docs) {
+    scroll-behavior: auto;
+  }
+
+  .bw-doc *,
+  .bw-doc *::before,
+  .bw-doc *::after,
+  .bw-docs *,
+  .bw-docs *::before,
+  .bw-docs *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .bw-card:hover,
+  .bw-quest:hover {
+    transform: none;
+  }
+
+  /*
+   * The cast, settled.
+   *
+   * The blanket rule above stops `animation-duration: 0.01ms`, which does not remove the animation —
+   * it runs it once, instantly, and leaves the element on its **last** keyframe. For this animation
+   * that keyframe is `opacity: 1`, so all four faces and all four names would land on top of each
+   * other as one illegible blob. Switching the animation off instead leaves every layer at its
+   * authored `opacity: 0`, and the first one is shown so the card still has a Bagworker in it.
+   */
+  .bw-cast-layer {
+    animation: none !important;
+  }
+
+  /*
+   * Which layer is the "settled" one has to be spelled out per group.
+   *
+   * `:first-child` was the obvious version and it is wrong for the bars: each `<i>` is the only
+   * child of its own track, so `:first-child` matched all four of them and left every bar lit.
+   * (The faces and the names happen to be siblings, so they were fine — which is exactly the kind of
+   * difference that hides a bug until it is looked at.)
+   */
+  .bw-cast-pfp > svg:first-child,
+  .bw-cast-lines > p:first-child,
+  .bw-cast-bar:first-child > i {
+    opacity: 1;
+  }
+}
+
+
+
+
+
+
+
+
+

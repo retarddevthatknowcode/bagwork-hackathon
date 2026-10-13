@@ -1,0 +1,16 @@
+# Files that must never be uploaded with a deployment.
+#
+# Environment configuration on Vercel comes from the project's environment variables
+# (set in the dashboard or via `vercel env add`) - never from a committed or uploaded
+# .env file. Without this, the CLI would upload the developer's local `.env`, putting a
+# copy of the database password inside the deployment source.
+.env
+.env.local
+
+# Local tooling and scratch output.
+tool-results/
+*.log
+recovered/
+
+# The retired SQLite database. Postgres (Supabase) is the source of truth now.
+db/

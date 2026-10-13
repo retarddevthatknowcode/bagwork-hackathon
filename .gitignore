@@ -1,0 +1,102 @@
+﻿# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+# Build/typecheck output captured to files during debugging. `*.log` is covered above;
+# `*.err` was not, so those files showed up as untracked noise in every `git status`.
+*.err
+
+# env files (can opt-in for committing if needed)
+.env*
+# The template holds no secrets and every machine needs to know which keys to
+# fill in, so it is exempted from the blanket `.env*` ignore above.
+!.env.example
+
+# vercel
+.vercel
+
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+local-*
+.claude
+.z-ai-config
+*.log
+dev.log
+dev.out.log
+test
+prompt
+
+server.log
+# Skills directory
+/skills/
+.vercel
+
+# NOTE: this file used to end with a second `.env*` rule. Git applies patterns in
+# order and the last match wins, so that trailing rule re-ignored `.env.example` and
+# undid the `!.env.example` exemption above - the committed template could never be
+# staged. `.env*` is already ignored further up, and the negation now survives.
+
+# Compiled output for the funding-verification test (run via npx tsc).
+tests/funding/.compiled/
+# Compiled output for the social-verification test (run via npx tsc).
+tests/social-verification/.compiled/
+# Compiled output for the Fee Redirect test (run via npx tsc -p).
+tests/fee-redirect/.compiled/
+# Compiled output for the demo-bag sweep test (run via npx tsc).
+tests/demo-bag-sweep/.compiled/
+
+# The preview SQLite database the packaging template copies into a build
+# (`.zscripts/database-runtime-build.sh`, `start.sh`). Never committed again: what was in it was a
+# prototype dataset . demo campaigns, fabricated submissions and fake payouts . and the app does not
+# read it (the real database is Postgres, via DATABASE_URL). The build tolerates its absence and
+# initialises an empty one instead, which is asserted by tests/database-runtime-build.sh.
+/db/
+
+# Output of `npm run verify:funding`
+/.vftmp/
+
+# Archived pre-redesign code — the REWARDS_DASHBOARD.EXE hero, recovered from the live
+# deployment and the old worktree so that nothing about it is lost (see
+# `recovered/README.md`). It is not part of the app: kept out of git, which also keeps it
+# out of ESLint (which ignores gitignored paths), and out of TypeScript via tsconfig's
+# `exclude`, because it was written against an older schema and does not compile today.
+/recovered/
+
+# Cline / agent session artifacts. Never part of the app and never safe to publish:
+# `tool-results/` holds raw agent tool output *and* a nested git worktree
+# (`.kilo/worktrees/...`) that carries its own local `.env`; `agent-ctx/` holds agent
+# scratch docs; `.kilo/` holds agent state. Excluded so none of it — secrets included —
+# can ever reach the repository.
+/tool-results/
+/agent-ctx/
+.kilo/
+
